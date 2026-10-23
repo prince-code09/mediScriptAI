@@ -106,3 +106,54 @@ def test_explicit_confirmation_workflow(client: TestClient, auth_headers: dict):
     actions = [log["action"] for log in audit_logs]
     assert "confirm" in actions
     assert "revise" in actions
+
+def test_15_day_recycle_bin_expiration_cleanup(client: TestClient, auth_headers: dict):
+    from datetime import datetime, timezone, timedelta
+    from app.db.memory_store import memory_store
+
+    now = datetime.now(timezone.utc)
+    clinic_id = "c1111111-1111-1111-1111-111111111111"
+
+    # 1. Old expired deleted prescription (deleted 16 days ago)
+    old_id = "rx-expired-16-days"
+    memory_store.prescriptions[old_id] = {
+        "id": old_id,
+        "clinic_id": clinic_id,
+        "doctor_id": "test-doctor",
+        "prescription_number": "MED-EXP-16",
+        "date": "2026-10-01",
+        "patient_name": "Old Expired Record",
+        "is_deleted": True,
+        "deleted_at": (now - timedelta(days=16)).isoformat(),
+        "status": "deleted",
+        "created_at": (now - timedelta(days=20)).isoformat(),
+        "updated_at": (now - timedelta(days=16)).isoformat()
+    }
+
+    # 2. Recent deleted prescription (deleted 5 days ago, should be retained)
+    recent_id = "rx-recent-5-days"
+    memory_store.prescriptions[recent_id] = {
+        "id": recent_id,
+        "clinic_id": clinic_id,
+        "doctor_id": "test-doctor",
+        "prescription_number": "MED-REC-05",
+        "date": "2026-10-18",
+        "patient_name": "Recent Deleted Record",
+        "is_deleted": True,
+        "deleted_at": (now - timedelta(days=5)).isoformat(),
+        "status": "deleted",
+        "created_at": (now - timedelta(days=10)).isoformat(),
+        "updated_at": (now - timedelta(days=5)).isoformat()
+    }
+
+    # 3. Trigger cleanup endpoint
+    resp = client.post("/api/v1/prescriptions/cleanup-expired", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["purged_count"] >= 1
+
+    # Verify 16-day record was permanently purged
+    assert old_id not in memory_store.prescriptions
+
+    # Verify 5-day record is retained safely in recycle bin
+    assert recent_id in memory_store.prescriptions
+    assert memory_store.prescriptions[recent_id]["is_deleted"] is True

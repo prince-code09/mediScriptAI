@@ -66,6 +66,13 @@ export class SpeechService {
       patientGender = 'Male';
     }
 
+    // 3b. Phone Number (Optional 10-digit Indian mobile)
+    let patientPhone = '';
+    const phoneMatch = text.match(/(?:phone|mobile|contact|number|ph)\s*(?:is|number|no|:)?\s*(\+?91[\-\s]?)?([6-9]\d{9})\b/i);
+    if (phoneMatch && phoneMatch[2]) {
+      patientPhone = phoneMatch[2];
+    }
+
     // 4. Vitals - STRICT: Only if explicitly spoken
     const vitals: any = {};
     const bpMatch = lower.match(/(?:bp|blood pressure)\s*(?:is|hai|:)?\s*(\d{2,3}\s*\/\s*\d{2,3})/i);
@@ -74,7 +81,7 @@ export class SpeechService {
     const pulseMatch = lower.match(/(?:pulse|heart rate)\s*(?:is|hai|:)?\s*(\d{2,3})/i);
     if (pulseMatch) vitals.pulse = pulseMatch[1] + ' bpm';
 
-    const tempMatch = lower.match(/(?:temp|temperature|bukhar)\s*(?:is|hai|:)?\s*(\d{2,3}(?:\.\d)?)/i);
+    const tempMatch = lower.match(/(?:temp|temperature|bukhar)\s*(?:is|hai|:)?\s*(\d{2,3}(?:\.\d)?)/i) || lower.match(/fever\s*(?:of|is|:)?\s*(\d{2,3}(?:\.\d)?)\s*(?:f|deg|degree)?/i);
     if (tempMatch) vitals.temp = tempMatch[1] + ' °F';
 
     const spo2Match = lower.match(/(?:spo2|oxygen|saturation)\s*(?:is|hai|:)?\s*(\d{2,3})/i);
@@ -208,6 +215,7 @@ export class SpeechService {
       patientName,
       patientAge,
       patientGender,
+      patientPhone,
       symptoms,
       durationOfSymptoms,
       clinicalFindings: '',

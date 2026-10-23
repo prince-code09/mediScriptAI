@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Prescription } from '../../types';
 import { StatusBadge } from '../common/StatusBadge';
@@ -19,7 +19,11 @@ import {
   getPrescriptionLabels, 
   translateFrequency, 
   translateInstructions, 
-  translateAdvice 
+  translateAdvice,
+  translateGender,
+  translateDosageForm,
+  translateDuration,
+  translateFollowUp
 } from '../../services/prescriptionTranslation';
 
 interface Props {
@@ -30,23 +34,32 @@ interface Props {
 
 export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, onBack }) => {
   const { formatSettings, savePrescription, showToast, activeClinic } = useApp();
+  
+  // Single source of truth: synchronized with prescription.printLanguage
   const [printLang, setPrintLang] = useState<PrintLanguage>(prescription.printLanguage || 'en');
   
-  // Mandatory language-selection dialog state before final print action
+  // Language dialog state
   const [showLanguageDialog, setShowLanguageDialog] = useState<boolean>(false);
-  const [selectedDialogLang, setSelectedDialogLang] = useState<PrintLanguage>(printLang);
+  const [selectedDialogLang, setSelectedDialogLang] = useState<PrintLanguage>(prescription.printLanguage || 'en');
+
+  // Synchronize state whenever prescription prop or its printLanguage changes
+  useEffect(() => {
+    const lang = prescription.printLanguage || 'en';
+    setPrintLang(lang);
+    setSelectedDialogLang(lang);
+  }, [prescription.id, prescription.printLanguage]);
 
   const handleOpenPrintModal = () => {
     setSelectedDialogLang(printLang);
     setShowLanguageDialog(true);
   };
 
-  // Apply language and refresh the on-screen preview WITHOUT opening print dialog
-  const handleApplyLanguage = (newLang: PrintLanguage) => {
+  // Immediate language selection: updates preview and persists to prescription
+  const handleSelectLanguage = (newLang: PrintLanguage) => {
     setPrintLang(newLang);
-    setShowLanguageDialog(false);
+    setSelectedDialogLang(newLang);
 
-    // Save language choice to record
+    // Save language choice to record so preview and state are 100% synchronized
     const updated: Prescription = {
       ...prescription,
       printLanguage: newLang
@@ -54,12 +67,33 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
     savePrescription(updated);
 
     const langName = newLang === 'hi' ? 'हिंदी (Hindi — Devanagari)' : newLang === 'hinglish' ? 'Hinglish (Roman)' : 'English';
-    showToast(`Prescription preview updated to ${langName}. Review below, then click Print Prescription.`, 'info');
+    showToast(`Prescription language set to ${langName}. Preview updated.`, 'info');
   };
 
-  // Explicit print trigger: opens browser print dialog only when doctor clicks Print Prescription
-  const handlePrintPrescription = () => {
-    window.print();
+  // Explicit print trigger: ensures DOM is completely updated and matches latest visible preview before printing
+  const handlePrintPrescription = (targetLang?: PrintLanguage) => {
+    const langToPrint = targetLang || printLang;
+    
+    if (langToPrint !== printLang) {
+      setPrintLang(langToPrint);
+      setSelectedDialogLang(langToPrint);
+    }
+    
+    setShowLanguageDialog(false);
+
+    // Save language choice to record
+    const updated: Prescription = {
+      ...prescription,
+      printLanguage: langToPrint
+    };
+    savePrescription(updated);
+
+    // Allow DOM to flush and paint the selected language before invoking browser print dialog
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        window.print();
+      }, 80);
+    });
   };
 
   const handleConfirmSave = () => {
@@ -168,7 +202,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                   <button
                     key={lang}
                     type="button"
-                    onClick={() => setPrintLang(lang)}
+                    onClick={() => handleSelectLanguage(lang)}
                     style={{
                       padding: '4px 9px',
                       fontSize: '0.76rem',
@@ -212,7 +246,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
 
           {/* Explicit Print Action: Opens print dialog directly using current preview language */}
           <button 
-            onClick={handlePrintPrescription} 
+            onClick={() => handlePrintPrescription()} 
             className="btn btn-primary" 
             style={{ background: 'var(--primary-navy)' }}
             title="Open browser print dialog"
@@ -294,7 +328,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                   name="printLanguage" 
                   value="en"
                   checked={selectedDialogLang === 'en'}
-                  onChange={() => setSelectedDialogLang('en')}
+                  onChange={() => handleSelectLanguage('en')}
                   style={{ width: '18px', height: '18px' }}
                 />
                 <div>
@@ -326,7 +360,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                   name="printLanguage" 
                   value="hi"
                   checked={selectedDialogLang === 'hi'}
-                  onChange={() => setSelectedDialogLang('hi')}
+                  onChange={() => handleSelectLanguage('hi')}
                   style={{ width: '18px', height: '18px' }}
                 />
                 <div>
@@ -358,7 +392,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                   name="printLanguage" 
                   value="hinglish"
                   checked={selectedDialogLang === 'hinglish'}
-                  onChange={() => setSelectedDialogLang('hinglish')}
+                  onChange={() => handleSelectLanguage('hinglish')}
                   style={{ width: '18px', height: '18px' }}
                 />
                 <div>
@@ -378,16 +412,16 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                 onClick={() => setShowLanguageDialog(false)}
                 className="btn btn-secondary btn-sm"
               >
-                Cancel
+                Close & Keep Preview
               </button>
               <button 
                 type="button" 
-                onClick={() => handleApplyLanguage(selectedDialogLang)}
-                className="btn btn-ai btn-sm"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                onClick={() => handlePrintPrescription(selectedDialogLang)}
+                className="btn btn-primary btn-sm"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'var(--primary-navy)' }}
               >
-                <Languages size={15} />
-                <span>Apply Language & Preview</span>
+                <Printer size={15} />
+                <span>Print in {selectedDialogLang === 'hi' ? 'हिंदी' : selectedDialogLang === 'hinglish' ? 'Hinglish' : 'English'}</span>
               </button>
             </div>
           </div>
@@ -498,7 +532,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                 )}
                 {formatSettings.showDoctorRegNo !== false && prescription.doctorRegNo && prescription.doctorRegNo.trim() && (
                   <p style={{ fontSize: '0.78rem', color: '#718096', margin: '2px 0 0 0' }}>
-                    Reg. No: <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{prescription.doctorRegNo}</span>
+                    {labels.regNo} <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{prescription.doctorRegNo}</span>
                   </p>
                 )}
               </div>
@@ -528,7 +562,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                   {labels.ageGender}
                 </span>
                 <span style={{ fontWeight: 600, color: '#2D3748' }}>
-                  {prescription.patientAge} Yrs / {prescription.patientGender}
+                  {prescription.patientAge} {labels.years} / {translateGender(prescription.patientGender, printLang)}
                 </span>
               </div>
               <div>
@@ -566,11 +600,11 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                   <HeartPulse size={14} />
                   <span>{labels.vitals}:</span>
                 </div>
-                {vitals?.bp?.trim() && <div>BP: <strong>{vitals.bp}</strong></div>}
-                {vitals?.pulse?.trim() && <div>Pulse: <strong>{vitals.pulse} bpm</strong></div>}
-                {vitals?.temp?.trim() && <div>Temp: <strong>{vitals.temp} °F</strong></div>}
-                {vitals?.spo2?.trim() && <div>SpO2: <strong>{vitals.spo2}</strong></div>}
-                {vitals?.weight?.trim() && <div>Weight: <strong>{vitals.weight} kg</strong></div>}
+                {vitals?.bp?.trim() && <div>{labels.vitalBp}: <strong>{vitals.bp}</strong></div>}
+                {vitals?.pulse?.trim() && <div>{labels.vitalPulse}: <strong>{vitals.pulse} bpm</strong></div>}
+                {vitals?.temp?.trim() && <div>{labels.vitalTemp}: <strong>{vitals.temp} °F</strong></div>}
+                {vitals?.spo2?.trim() && <div>{labels.vitalSpo2}: <strong>{vitals.spo2}</strong></div>}
+                {vitals?.weight?.trim() && <div>{labels.vitalWeight}: <strong>{vitals.weight} kg</strong></div>}
               </div>
             )}
 
@@ -581,11 +615,11 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                 {prescription.symptoms?.trim() && (
                   <div style={{ marginBottom: '6px' }}>
                     <span style={{ fontWeight: 700, color: '#2D3748' }}>
-                      {printLang === 'hi' ? 'मरीज द्वारा बताए गए लक्षण (Complaints): ' : labels.complaints + ' (Patient-Reported): '}
+                      {labels.complaintsPatient} {' '}
                     </span>
                     <span style={{ color: '#4A5568' }}>
                       {prescription.symptoms}
-                      {prescription.durationOfSymptoms?.trim() ? ` (${prescription.durationOfSymptoms})` : ''}
+                      {prescription.durationOfSymptoms?.trim() ? ` (${translateDuration(prescription.durationOfSymptoms, printLang)})` : ''}
                     </span>
                   </div>
                 )}
@@ -594,7 +628,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                 {prescription.clinicalFindings?.trim() && (
                   <div style={{ marginBottom: '6px' }}>
                     <span style={{ fontWeight: 700, color: '#2D3748' }}>
-                      {printLang === 'hi' ? 'चिकित्सीय जांच (Doctor Examination): ' : labels.findings + ' (Doctor Examination): '}
+                      {labels.findingsDoctor} {' '}
                     </span>
                     <span style={{ color: '#4A5568' }}>{prescription.clinicalFindings}</span>
                   </div>
@@ -604,15 +638,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                 {prescription.diagnosis?.trim() && (
                   <div>
                     <span style={{ fontWeight: 700, color: prescription.isDiagnosisConfirmed ? '#059669' : '#D97706' }}>
-                      {prescription.isDiagnosisConfirmed ? (
-                        printLang === 'hi' 
-                          ? '✓ पुष्ट निदान (Doctor-Confirmed Diagnosis): ' 
-                          : '✓ Doctor-Confirmed Diagnosis: '
-                      ) : (
-                        printLang === 'hi' 
-                          ? '⚠ संभावित निदान (Provisional Assessment): ' 
-                          : '⚠ Provisional Assessment (Unconfirmed): '
-                      )}
+                      {prescription.isDiagnosisConfirmed ? labels.diagnosisConfirmed : labels.diagnosisProvisional} {' '}
                     </span>
                     <span style={{ color: '#1A202C', fontWeight: 600 }}>
                       {prescription.diagnosis}
@@ -654,14 +680,16 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                         {/* Medicine name is strictly preserved for medical accuracy */}
                         <strong style={{ color: '#1A202C' }}>{med.name}</strong>
                         <div style={{ fontSize: '0.74rem', color: '#718096' }}>
-                          {med.dosageForm} {med.strength && `· ${med.strength}`} {med.route && `· [${med.route}]`}
+                          {translateDosageForm(med.dosageForm, printLang)} {med.strength && `· ${med.strength}`} {med.route && `· [${med.route}]`}
                         </div>
                       </td>
                       <td style={{ padding: '8px 8px', color: '#2D3748' }}>{med.dose}</td>
                       <td style={{ padding: '8px 8px', color: '#243B64', fontWeight: 600 }}>
                         {translateFrequency(med.frequency, printLang)}
                       </td>
-                      <td style={{ padding: '8px 8px', color: '#2D3748' }}>{med.duration}</td>
+                      <td style={{ padding: '8px 8px', color: '#2D3748' }}>
+                        {translateDuration(med.duration, printLang)}
+                      </td>
                       {formatSettings.showDosageInstructions !== false && (
                         <td style={{ padding: '8px 8px', color: '#4A5568', fontStyle: 'italic' }}>
                           {translateInstructions(med.instructions || '', printLang) || '—'}
@@ -688,7 +716,7 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
                 {formatSettings.showFollowUp !== false && Boolean(prescription.followUp?.trim()) && (
                   <div style={{ padding: '8px 12px', background: '#F8FAFC', borderRadius: '4px', borderLeft: '3px solid #7667F8' }}>
                     <strong style={{ color: '#1A202C' }}>{labels.followUpHeader}: </strong>
-                    <span style={{ color: '#4A5568' }}>{prescription.followUp}</span>
+                    <span style={{ color: '#4A5568' }}>{translateFollowUp(prescription.followUp, printLang)}</span>
                   </div>
                 )}
               </div>
@@ -699,7 +727,11 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
           <div style={{ marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid #E2E8F0' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '14px' }}>
               <div style={{ fontSize: '0.74rem', color: '#718096', maxWidth: '60%' }}>
-                {formatSettings.printNotes || labels.legalNote}
+                {formatSettings.printNotes && 
+                 formatSettings.printNotes.trim() && 
+                 formatSettings.printNotes !== 'Valid for dispensing at any licensed pharmacy in India. Keep out of reach of children.'
+                  ? formatSettings.printNotes
+                  : labels.legalNote}
               </div>
 
               {formatSettings.showSignatureLine !== false && (
@@ -716,8 +748,8 @@ export const PrescriptionPrintView: React.FC<Props> = ({ prescription, onEdit, o
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#A0AEC0' }}>
-              <span>Generated via MediScript Clinical AI</span>
-              <span>Electronic Medical Record · {prescription.date}</span>
+              <span>{labels.footerGenerated}</span>
+              <span>{labels.footerEmr} · {prescription.date}</span>
             </div>
           </div>
         </div>

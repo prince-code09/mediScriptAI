@@ -53,6 +53,11 @@ interface AppContextType {
   prescriptions: Prescription[];
   savePrescription: (rx: Prescription) => void;
   updatePrescriptionSyncStatus: (id: string, status: Prescription['syncStatus']) => void;
+  recycleBin: Prescription[];
+  softDeletePrescription: (id: string) => void;
+  restorePrescription: (id: string) => void;
+  permanentlyDeletePrescription: (id: string) => void;
+  emptyRecycleBin: () => void;
   
   // Settings & Format
   formatSettings: FormatSettings;
@@ -100,6 +105,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Data
   const [patients, setPatientsState] = useState<Patient[]>(() => storageService.getPatients());
   const [prescriptions, setPrescriptionsState] = useState<Prescription[]>(() => storageService.getPrescriptions());
+  const [recycleBin, setRecycleBinState] = useState<Prescription[]>(() => storageService.getRecycleBinPrescriptions());
   const [formatSettings, setFormatSettingsState] = useState<FormatSettings>(() => storageService.getFormatSettings());
 
   // Staged data from voice assistant
@@ -113,6 +119,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     return false;
   });
+
+  // Automatic reliable background check: permanently purge items older than 15 days
+  useEffect(() => {
+    const runAutoPurge = () => {
+      const purged = storageService.purgeExpiredPrescriptions();
+      if (purged > 0) {
+        setPrescriptionsState(storageService.getPrescriptions());
+        setRecycleBinState(storageService.getRecycleBinPrescriptions());
+      }
+    };
+    runAutoPurge();
+    const interval = setInterval(runAutoPurge, 60 * 60 * 1000); // Hourly check
+    return () => clearInterval(interval);
+  }, []);
 
   // Toast
   const [toast, setToast] = useState<ToastNotification | null>(null);
@@ -135,6 +155,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const activeId = storageService.getActiveClinicId(loadedClinics);
     const pats = storageService.getPatients();
     const rxs = storageService.getPrescriptions();
+    const bin = storageService.getRecycleBinPrescriptions();
     const format = storageService.getFormatSettings();
 
     setDoctorState(doc);
@@ -142,6 +163,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveClinicIdState(activeId);
     setPatientsState(pats);
     setPrescriptionsState(rxs);
+    setRecycleBinState(bin);
     setFormatSettingsState(format);
     setStagedVoiceData(null);
     setActivePrescriptionId(null);
@@ -161,6 +183,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveClinicIdState(activeId);
     setPatientsState([]);
     setPrescriptionsState([]);
+    setRecycleBinState([]);
     setFormatSettingsState(storageService.getFormatSettings());
     setStagedVoiceData(null);
     setActivePrescriptionId(null);
@@ -363,6 +386,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPrescriptionsState(updated);
   };
 
+  const softDeletePrescription = (id: string) => {
+    const { active, recycleBin: newBin } = storageService.softDeletePrescription(id);
+    setPrescriptionsState(active);
+    setRecycleBinState(newBin);
+    if (activePrescriptionId === id) {
+      setActivePrescriptionId(null);
+    }
+    showToast('Prescription moved to Recycle Bin (Retained for 15 days)', 'info');
+  };
+
+  const restorePrescription = (id: string) => {
+    const { active, recycleBin: newBin } = storageService.restorePrescription(id);
+    setPrescriptionsState(active);
+    setRecycleBinState(newBin);
+    showToast('Prescription restored to History successfully', 'success');
+  };
+
+  const permanentlyDeletePrescription = (id: string) => {
+    const { active, recycleBin: newBin } = storageService.permanentlyDeletePrescription(id);
+    setPrescriptionsState(active);
+    setRecycleBinState(newBin);
+    showToast('Prescription permanently deleted from storage', 'info');
+  };
+
+  const emptyRecycleBin = () => {
+    const { active, recycleBin: newBin } = storageService.emptyRecycleBin();
+    setPrescriptionsState(active);
+    setRecycleBinState(newBin);
+    showToast('Recycle Bin has been emptied', 'info');
+  };
+
   const updateFormatSettings = (settings: FormatSettings) => {
     setFormatSettingsState(settings);
     storageService.saveFormatSettings(settings);
@@ -389,25 +443,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Logged out securely', 'info');
   };
 
-  // Sync simulation
+  // Sync calculation: pending active items
   const pendingSyncCount = prescriptions.filter(
-    p => p.syncStatus === 'saved_on_device' || p.syncStatus === 'sync_pending'
+    p => !p.isDeleted && (p.syncStatus === 'saved_on_device' || p.syncStatus === 'sync_pending')
   ).length;
 
   const syncAllPending = async () => {
-    const pendingRx = prescriptions.filter(
-      p => p.syncStatus === 'saved_on_device' || p.syncStatus === 'sync_pending' || p.syncStatus === 'sync_failed'
+    // Only sync active non-deleted prescriptions, plus soft_delete operations for recycle bin items
+    const pendingActive = prescriptions.filter(
+      p => !p.isDeleted && (p.syncStatus === 'saved_on_device' || p.syncStatus === 'sync_pending' || p.syncStatus === 'sync_failed')
     );
-    if (pendingRx.length === 0) {
+    const pendingDeleted = recycleBin.filter(
+      p => p.syncStatus === 'saved_on_device' || p.syncStatus === 'sync_pending'
+    );
+
+    if (pendingActive.length === 0 && pendingDeleted.length === 0) {
       showToast('All patient consultations are already synchronized with the server.', 'info');
       return;
     }
 
-    showToast(`Attempting synchronization for ${pendingRx.length} consultation(s)...`, 'info');
+    showToast(`Attempting synchronization for ${pendingActive.length + pendingDeleted.length} consultation(s)...`, 'info');
 
     try {
       // Build idempotent operations with client-generated UUIDs
-      const operations = pendingRx.map(p => ({
+      const activeOps = pendingActive.map(p => ({
         client_operation_id: typeof crypto !== 'undefined' && crypto.randomUUID 
           ? crypto.randomUUID() 
           : `op-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
@@ -416,6 +475,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         operation: 'update',
         payload: p
       }));
+
+      const deleteOps = pendingDeleted.map(p => ({
+        client_operation_id: typeof crypto !== 'undefined' && crypto.randomUUID 
+          ? crypto.randomUUID() 
+          : `op-del-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        entity_type: 'prescription',
+        entity_id: p.id,
+        operation: 'soft_delete',
+        payload: p
+      }));
+
+      const operations = [...activeOps, ...deleteOps];
 
       const syncRes = await apiClient.syncBatch(activeClinicId, operations);
       
@@ -488,7 +559,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addPatient,
         updatePatient,
         prescriptions,
+        recycleBin,
         savePrescription,
+        softDeletePrescription,
+        restorePrescription,
+        permanentlyDeletePrescription,
+        emptyRecycleBin,
         updatePrescriptionSyncStatus,
         formatSettings,
         updateFormatSettings,

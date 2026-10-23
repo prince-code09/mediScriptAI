@@ -5,7 +5,7 @@ class SyncOperationItem(BaseModel):
     client_operation_id: str = Field(..., min_length=1, description="Client-generated unique UUID for idempotency")
     entity_type: str = Field(..., pattern="^(patient|prescription)$")
     entity_id: str = Field(..., min_length=1)
-    operation: str = Field(..., pattern="^(create|update|confirm)$")
+    operation: str = Field(..., pattern="^(create|update|confirm|soft_delete|delete|restore|permanent_delete)$")
     payload: Dict[str, Any]
 
 class SyncBatchRequest(BaseModel):

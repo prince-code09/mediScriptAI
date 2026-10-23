@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { ThemeMode, TextSize, LayoutDensity, Language, FormatSettings } from '../types';
+import { ThemeMode, TextSize, LayoutDensity, Language, FormatSettings, Prescription } from '../types';
 import { LiveFormatPreview } from '../components/prescription/LiveFormatPreview';
 import { supabase } from '../services/supabaseClient';
 import { apiClient } from '../services/apiClient';
@@ -29,7 +29,9 @@ import {
   Lock,
   Loader2,
   Mail,
-  KeyRound
+  KeyRound,
+  Clock,
+  Info
 } from 'lucide-react';
 
 export const SettingsPage: React.FC = () => {
@@ -53,10 +55,16 @@ export const SettingsPage: React.FC = () => {
     formatSettings, 
     updateFormatSettings, 
     logout,
+    recycleBin,
+    restorePrescription,
+    permanentlyDeletePrescription,
+    emptyRecycleBin,
     showToast 
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'appearance' | 'doctor' | 'clinic' | 'format' | 'voice' | 'security'>('appearance');
+  const [activeTab, setActiveTab] = useState<'appearance' | 'doctor' | 'clinic' | 'format' | 'voice' | 'security' | 'recycle-bin'>('appearance');
+  const [rxToPermanentDelete, setRxToPermanentDelete] = useState<Prescription | null>(null);
+  const [showEmptyBinModal, setShowEmptyBinModal] = useState(false);
 
   // Form states for Doctor
   const [docName, setDocName] = useState(doctor.fullName);
@@ -440,6 +448,25 @@ export const SettingsPage: React.FC = () => {
         >
           <Shield size={16} />
           <span>Security & Sessions</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('recycle-bin')}
+          style={{
+            padding: '8px 14px',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: '0.86rem',
+            fontWeight: 600,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            background: activeTab === 'recycle-bin' ? 'var(--bg-card-subtle)' : 'transparent',
+            color: activeTab === 'recycle-bin' ? 'var(--primary-navy)' : 'var(--text-secondary)',
+            borderBottom: activeTab === 'recycle-bin' ? '2.5px solid var(--primary-navy)' : '2.5px solid transparent'
+          }}
+        >
+          <Trash2 size={16} />
+          <span>Recycle Bin ({recycleBin.length})</span>
         </button>
       </div>
 
@@ -1491,6 +1518,384 @@ export const SettingsPage: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Tab 7: Recycle Bin */}
+      {activeTab === 'recycle-bin' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          {/* Header Banner */}
+          <div 
+            style={{
+              background: 'rgba(59, 130, 246, 0.06)',
+              border: '1px solid rgba(59, 130, 246, 0.2)',
+              borderRadius: 'var(--radius-md)',
+              padding: '1rem 1.25rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '1rem',
+              flexWrap: 'wrap'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <Info size={22} color="#2563eb" style={{ flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                  15-Day Safety Recycle Bin
+                </div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                  Soft-deleted prescriptions are retained for 15 days before being automatically purged. You can restore records to active history or delete them permanently.
+                </div>
+              </div>
+            </div>
+
+            {recycleBin.length > 0 && (
+              <button
+                onClick={() => setShowEmptyBinModal(true)}
+                style={{
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  color: '#dc2626',
+                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  padding: '7px 14px',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '0.84rem',
+                  fontWeight: 600
+                }}
+              >
+                <Trash2 size={15} />
+                <span>Empty Recycle Bin</span>
+              </button>
+            )}
+          </div>
+
+          {/* List of items */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            {recycleBin.length === 0 ? (
+              <div className="card" style={{ textAlign: 'center', padding: '3.5rem 1rem' }}>
+                <Trash2 size={40} color="var(--text-muted)" style={{ margin: '0 auto 12px auto' }} />
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>
+                  Recycle Bin is Empty
+                </h3>
+                <p style={{ fontSize: '0.86rem', color: 'var(--text-secondary)', margin: 0 }}>
+                  No deleted prescriptions. Prescriptions deleted from History will be held here for 15 days.
+                </p>
+              </div>
+            ) : (
+              recycleBin.map(rx => {
+                const deletionTime = rx.deletedAt ? new Date(rx.deletedAt).getTime() : Date.now();
+                const expiryTime = deletionTime + 15 * 24 * 60 * 60 * 1000;
+                const msRemaining = expiryTime - Date.now();
+                const daysRemaining = Math.max(0, Math.ceil(msRemaining / (1000 * 60 * 60 * 24)));
+                const formattedDeletion = new Date(deletionTime).toLocaleDateString('en-IN', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit'
+                });
+                const formattedExpiry = new Date(expiryTime).toLocaleDateString('en-IN', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric'
+                });
+
+                return (
+                  <div 
+                    key={rx.id}
+                    className="card"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '1.15rem 1.35rem',
+                      flexWrap: 'wrap',
+                      gap: '1rem',
+                      borderLeft: '4px solid #f59e0b'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                      <div 
+                        style={{
+                          width: '42px',
+                          height: '42px',
+                          borderRadius: '10px',
+                          background: 'rgba(245, 158, 11, 0.12)',
+                          color: '#d97706',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontWeight: 700,
+                          fontSize: '0.9rem',
+                          flexShrink: 0
+                        }}
+                      >
+                        <Trash2 size={20} />
+                      </div>
+
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '3px', flexWrap: 'wrap' }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                            {rx.prescriptionNumber}
+                          </span>
+                          <span 
+                            style={{ 
+                              display: 'inline-flex', 
+                              alignItems: 'center', 
+                              gap: '4px',
+                              padding: '2px 8px', 
+                              borderRadius: 'var(--radius-full)', 
+                              fontSize: '0.75rem', 
+                              fontWeight: 700,
+                              background: daysRemaining <= 3 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(245, 158, 11, 0.12)',
+                              color: daysRemaining <= 3 ? '#dc2626' : '#d97706'
+                            }}
+                          >
+                            <Clock size={12} />
+                            <span>Auto-purges in {daysRemaining} day{daysRemaining === 1 ? '' : 's'}</span>
+                          </span>
+                        </div>
+
+                        <div style={{ fontWeight: 700, fontSize: '1.02rem', color: 'var(--text-primary)' }}>
+                          {rx.patientName} <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 500 }}>({rx.patientAge}y · {rx.patientGender})</span>
+                        </div>
+
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                          <span><strong>Deleted on:</strong> {formattedDeletion}</span>
+                          <span><strong>Expiry Date:</strong> {formattedExpiry}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Actions: Restore & Permanent Delete */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <button
+                        onClick={() => restorePrescription(rx.id)}
+                        className="btn btn-secondary btn-sm"
+                        style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}
+                        title="Restore prescription back to Active OPD History"
+                      >
+                        <RotateCcw size={15} color="#16a34a" />
+                        <span style={{ color: '#16a34a' }}>Restore</span>
+                      </button>
+
+                      <button
+                        onClick={() => setRxToPermanentDelete(rx)}
+                        style={{
+                          background: 'rgba(239, 68, 68, 0.08)',
+                          color: '#dc2626',
+                          border: '1px solid rgba(239, 68, 68, 0.25)',
+                          padding: '6px 12px',
+                          borderRadius: 'var(--radius-sm)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontSize: '0.82rem',
+                          fontWeight: 600
+                        }}
+                        title="Permanently remove now (Cannot be undone)"
+                      >
+                        <Trash2 size={15} />
+                        <span>Delete Forever</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: PERMANENT DELETE RX FROM SETTINGS */}
+      {rxToPermanentDelete && (
+        <div 
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.6)',
+            backdropFilter: 'blur(3px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '1rem'
+          }}
+        >
+          <div 
+            className="card"
+            style={{
+              maxWidth: '480px',
+              width: '100%',
+              padding: '1.75rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1.25rem',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.25)'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div 
+                style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: '50%',
+                  background: 'rgba(239, 68, 68, 0.15)',
+                  color: '#dc2626',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0
+                }}
+              >
+                <AlertTriangle size={22} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Permanently Delete Prescription?
+                </h3>
+                <p style={{ margin: '2px 0 0 0', fontSize: '0.82rem', color: '#dc2626', fontWeight: 600 }}>
+                  This action CANNOT be undone!
+                </p>
+              </div>
+            </div>
+
+            <div style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', lineHeight: '1.5', background: 'rgba(239, 68, 68, 0.05)', border: '1px solid rgba(239, 68, 68, 0.2)', padding: '12px', borderRadius: 'var(--radius-md)' }}>
+              <div><strong>Prescription Number:</strong> {rxToPermanentDelete.prescriptionNumber}</div>
+              <div><strong>Patient:</strong> {rxToPermanentDelete.patientName}</div>
+              <div style={{ marginTop: '8px', fontSize: '0.82rem', color: '#b91c1c' }}>
+                Are you sure you want to permanently erase this record? It will be immediately and irreversibly removed from local storage and the cloud database.
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '4px' }}>
+              <button
+                onClick={() => setRxToPermanentDelete(null)}
+                className="btn btn-secondary"
+                style={{ padding: '8px 16px', fontSize: '0.86rem' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  permanentlyDeletePrescription(rxToPermanentDelete.id);
+                  setRxToPermanentDelete(null);
+                }}
+                style={{
+                  background: '#dc2626',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '8px 18px',
+                  fontSize: '0.86rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <Trash2 size={16} />
+                <span>Delete Forever</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EMPTY RECYCLE BIN FROM SETTINGS */}
+      {showEmptyBinModal && (
+        <div 
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.6)',
+            backdropFilter: 'blur(3px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '1rem'
+          }}
+        >
+          <div 
+            className="card"
+            style={{
+              maxWidth: '460px',
+              width: '100%',
+              padding: '1.75rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1.25rem',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.25)'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div 
+                style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: '50%',
+                  background: 'rgba(239, 68, 68, 0.15)',
+                  color: '#dc2626',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0
+                }}
+              >
+                <Trash2 size={22} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Empty Entire Recycle Bin?
+                </h3>
+                <p style={{ margin: '2px 0 0 0', fontSize: '0.82rem', color: '#dc2626', fontWeight: 600 }}>
+                  Permanent purge of {recycleBin.length} prescription(s)
+                </p>
+              </div>
+            </div>
+
+            <div style={{ fontSize: '0.86rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+              Are you sure you want to permanently purge all <strong>{recycleBin.length}</strong> deleted prescription(s) right now? None of these records can be recovered once purged.
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '4px' }}>
+              <button
+                onClick={() => setShowEmptyBinModal(false)}
+                className="btn btn-secondary"
+                style={{ padding: '8px 16px', fontSize: '0.86rem' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  emptyRecycleBin();
+                  setShowEmptyBinModal(false);
+                }}
+                style={{
+                  background: '#dc2626',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '8px 18px',
+                  fontSize: '0.86rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <Trash2 size={16} />
+                <span>Empty All Records</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

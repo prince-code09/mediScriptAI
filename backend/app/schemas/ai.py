@@ -4,7 +4,7 @@ from app.schemas.prescription import MedicineItemSchema, VitalsSchema
 
 class SpeechParseRequest(BaseModel):
     transcript: str = Field(..., min_length=1)
-    language: Optional[str] = Field(default="en", pattern="^(en|hi)$")
+    language: Optional[str] = Field(default="en", pattern="^(en|hi|hinglish)$")
 
 class ExtractedPrescriptionData(BaseModel):
     patient_name: Optional[str] = None

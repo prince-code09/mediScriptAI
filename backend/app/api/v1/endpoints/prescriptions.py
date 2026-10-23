@@ -33,6 +33,16 @@ async def list_prescriptions(
         patient_id=patient_id
     )
 
+@router.post("/cleanup-expired")
+async def cleanup_expired_prescriptions(
+    user: AuthenticatedUser = Depends(get_current_user)
+):
+    """
+    Permanently purge soft-deleted prescriptions exceeding the 15-day safety retention period.
+    """
+    purged = await prescription_service.cleanup_expired_prescriptions()
+    return {"status": "success", "purged_count": purged, "retention_days": 15}
+
 @router.post("", response_model=PrescriptionResponse)
 async def create_draft(
     data: PrescriptionCreate,

@@ -497,6 +497,8 @@ label {
     background: #FFFFFF !important;
     color: #111827 !important;
     page-break-inside: avoid;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
 
   .print-page-a4 {

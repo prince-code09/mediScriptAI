@@ -118,6 +118,8 @@ export interface Prescription {
   createdAt: string;
   source: 'voice' | 'manual';
   printLanguage?: 'en' | 'hi' | 'hinglish';
+  isDeleted?: boolean;
+  deletedAt?: string;
 }
 
 export interface FormatSettings {

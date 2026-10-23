@@ -51,11 +51,7 @@ const normalizeClinicalSpeech = (text: string): string => {
     .replace(/\b(?:levocetrizine|montek\s*lc)\b/gi, 'Levocetirizine + Montelukast')
     .replace(/\b(?:cop\s*syrup|cup\s*syrup|cough\s*syrop)\b/gi, 'Cough Syrup')
     // Standardize BP formatting
-    .replace(/\b(?:bp|blood\s*pressure)\s*(\d{2,3})\s*(?:by|over|\/)\s*(\d{2,3})\b/gi, 'BP $1/$2 mmHg')
-    // Indian Hindi terms
-    .replace(/\bsubah\s+sham\b/gi, 'subah sham (1-0-1)')
-    .replace(/\bsubah\s+khali\s+pet\b/gi, 'subah khali pet (1-0-0)')
-    .replace(/\braat\s+ko\b/gi, 'raat ko (0-0-1)');
+    .replace(/\b(?:bp|blood\s*pressure)\s*(\d{2,3})\s*(?:by|over|\/)\s*(\d{2,3})\b/gi, 'BP $1/$2 mmHg');
 };
 
 export const VoiceOrb3D: React.FC = () => {
@@ -72,6 +68,7 @@ export const VoiceOrb3D: React.FC = () => {
   
   const parsedVoiceResultRef = useRef<any | null>(null);
   const speechTextRef = useRef<string>(stagedVoiceData?.rawDictation || '');
+  const sessionBaseTextRef = useRef<string>(stagedVoiceData?.rawDictation || '');
   const isListeningRef = useRef<boolean>(false);
   const isActionPendingRef = useRef<boolean>(false);
   const timerRef = useRef<any>(null);
@@ -90,10 +87,12 @@ export const VoiceOrb3D: React.FC = () => {
     if (stagedVoiceData?.rawDictation) {
       setSpeechText(stagedVoiceData.rawDictation);
       speechTextRef.current = stagedVoiceData.rawDictation;
+      sessionBaseTextRef.current = stagedVoiceData.rawDictation;
     } else if (stagedVoiceData === null) {
       // Clean slate for new consultation: never append old speech
       setSpeechText('');
       speechTextRef.current = '';
+      sessionBaseTextRef.current = '';
       parsedVoiceResultRef.current = null;
     }
   }, [stagedVoiceData]);
@@ -328,38 +327,55 @@ export const VoiceOrb3D: React.FC = () => {
       rec.interimResults = true;
       rec.lang = selectedLang === 'hi' ? 'hi-IN' : 'en-IN';
 
-      let accumulated = speechText ? speechText.trim() + ' ' : '';
+      // Initialize base text from current textarea/ref to prevent dropping or duplicating
+      const currentRaw = (speechTextRef.current || speechText).trim();
+      sessionBaseTextRef.current = currentRaw ? currentRaw + ' ' : '';
 
       rec.onresult = (e: any) => {
-        let interim = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          if (e.results[i].isFinal) {
-            accumulated += e.results[i][0].transcript + ' ';
+        let sessionFinal = '';
+        let sessionInterim = '';
+
+        for (let i = 0; i < e.results.length; i++) {
+          const item = e.results[i];
+          if (!item || !item[0]) continue;
+          const chunk = item[0].transcript || '';
+          if (item.isFinal) {
+            sessionFinal += chunk + ' ';
           } else {
-            interim += e.results[i][0].transcript;
+            sessionInterim += chunk;
           }
         }
-        const fullCurrent = (accumulated + interim).trim();
+
+        const fullCurrent = (sessionBaseTextRef.current + sessionFinal + sessionInterim).trim();
         if (fullCurrent) {
-          const cleaned = normalizeClinicalSpeech(fullCurrent);
-          speechTextRef.current = cleaned;
-          setSpeechText(cleaned);
+          speechTextRef.current = fullCurrent;
+          setSpeechText(fullCurrent);
         }
       };
 
       rec.onerror = (err: any) => {
         console.warn('SpeechRecognition event error:', err);
+        if (err.error === 'no-speech') {
+          // Normal silence detection from browser engine; continue listening smoothly
+          return;
+        }
         if (err.error === 'not-allowed' || err.error === 'service-not-allowed') {
           isListeningRef.current = false;
           setVoiceState('error');
           setMicPermissionGranted(false);
-          setErrorMessage('Microphone access was denied or audio device is in use.');
+          setErrorMessage('Microphone access was denied. Please allow microphone permissions in your browser address bar.');
+          showToast('Microphone access denied', 'error');
+        } else if (err.error === 'network') {
+          console.warn('SpeechRecognition network notice; preserved transcript.');
         }
       };
 
       rec.onend = () => {
         // Continuous listening: seamlessly restart if user hasn't explicitly clicked stop
         if (isListeningRef.current) {
+          // Commit finalized session text into base so restart continues cleanly without duplicates
+          const currentText = (speechTextRef.current || speechText).trim();
+          sessionBaseTextRef.current = currentText ? currentText + ' ' : '';
           try {
             rec.start();
           } catch (e) {
@@ -403,9 +419,14 @@ export const VoiceOrb3D: React.FC = () => {
       return;
     }
 
+    // Clean up transcript phonetics deterministically before extraction
+    const cleanedText = normalizeClinicalSpeech(text);
+    speechTextRef.current = cleanedText;
+    setSpeechText(cleanedText);
+
     // Direct one-click doctor workflow: automatically organize speech and open editable prescription draft
     try {
-      await handleProcessAndNavigate(text);
+      await handleProcessAndNavigate(cleanedText);
     } finally {
       isActionPendingRef.current = false;
     }
@@ -426,6 +447,9 @@ export const VoiceOrb3D: React.FC = () => {
     setVoiceState('idle');
     const text = (speechTextRef.current || speechText).trim();
     if (text) {
+      const cleaned = normalizeClinicalSpeech(text);
+      speechTextRef.current = cleaned;
+      setSpeechText(cleaned);
       showToast('Recording finished! Transcript is ready for review or editing below.', 'info');
     }
   };
@@ -914,6 +938,7 @@ export const VoiceOrb3D: React.FC = () => {
           onChange={(e) => {
             setSpeechText(e.target.value);
             speechTextRef.current = e.target.value;
+            sessionBaseTextRef.current = e.target.value;
           }}
           placeholder="Microphone dictation will appear here in real-time as you speak. You can also directly type, edit, or paste patient complaints, clinical observations, vitals, and prescribed medicines here..."
           rows={5}

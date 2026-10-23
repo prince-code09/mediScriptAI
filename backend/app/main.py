@@ -91,6 +91,16 @@ async def health_check():
 # ------------------------------------------------------------------------------
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+@app.on_event("startup")
+async def on_startup():
+    try:
+        from app.services.prescription_service import prescription_service
+        count = await prescription_service.cleanup_expired_prescriptions()
+        if count > 0:
+            logger.info(f"Startup maintenance: Purged {count} expired soft-deleted prescription(s).")
+    except Exception as e:
+        logger.warning(f"Startup expired prescription cleanup notice: {str(e)}")
+
 @app.get("/", include_in_schema=False)
 async def root():
     return {

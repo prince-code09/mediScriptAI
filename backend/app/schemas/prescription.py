@@ -41,9 +41,11 @@ class PrescriptionBase(BaseModel):
     follow_up: Optional[str] = ""
     tests: Optional[str] = ""
     source: str = Field(default="manual", pattern="^(manual|voice|ai)$")
-    status: str = Field(default="draft", pattern="^(draft|confirmed)$")
+    status: str = Field(default="draft", pattern="^(draft|confirmed|deleted)$")
     sync_status: str = Field(default="synced", pattern="^(saved_on_device|sync_pending|synced|sync_failed)$")
     print_language: str = Field(default="en", pattern="^(en|hi|hinglish)$")
+    is_deleted: Optional[bool] = False
+    deleted_at: Optional[str] = None
 
 class PrescriptionCreate(PrescriptionBase):
     pass

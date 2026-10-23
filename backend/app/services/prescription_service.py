@@ -1,9 +1,10 @@
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import uuid
 import math
 
 from app.core.config import settings
+from app.core.logging import logger
 from app.core.security import AuthenticatedUser
 from app.core.exceptions import (
     EntityNotFoundException,
@@ -24,6 +25,52 @@ from app.schemas.common import PaginatedResponse
 from app.services.clinic_service import clinic_service
 
 class PrescriptionService:
+    async def cleanup_expired_prescriptions(self) -> int:
+        """
+        Permanently purge soft-deleted prescriptions older than 15 days retention window.
+        Safe against timezone differences, idempotent, and updates audit trail.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=15)
+        cutoff_iso = cutoff.isoformat()
+        purged_count = 0
+
+        if settings.is_supabase_configured:
+            try:
+                # Query expired records
+                expired = await supabase_client.get(
+                    "prescriptions",
+                    params={
+                        "is_deleted": "eq.true",
+                        "deleted_at": f"lt.{cutoff_iso}"
+                    }
+                )
+                if expired:
+                    for rx in expired:
+                        rx_id = rx.get("id")
+                        if rx_id:
+                            await supabase_client.delete("prescriptions", params={"id": f"eq.{rx_id}"})
+                            await supabase_client.insert("prescription_audit_logs", {
+                                "prescription_id": rx_id,
+                                "user_id": rx.get("doctor_id", "system"),
+                                "action": "auto_purge_retention_expired",
+                                "metadata": {"retention_days": 15, "deleted_at": rx.get("deleted_at")},
+                                "created_at": datetime.now(timezone.utc).isoformat()
+                            })
+                            purged_count += 1
+            except Exception as e:
+                logger.warning(f"Supabase expired prescription cleanup notice: {str(e)}")
+
+        # Also purge in-memory store
+        to_purge = [
+            rx_id for rx_id, rx in memory_store.prescriptions.items()
+            if rx.get("is_deleted") and rx.get("deleted_at") and rx.get("deleted_at") < cutoff_iso
+        ]
+        for rx_id in to_purge:
+            memory_store.prescriptions.pop(rx_id, None)
+            purged_count += 1
+
+        return purged_count
+
     async def list_prescriptions(
         self,
         clinic_id: str,
@@ -35,14 +82,25 @@ class PrescriptionService:
     ) -> PaginatedResponse[PrescriptionResponse]:
         await clinic_service.verify_clinic_access(clinic_id, user)
 
+        # Automatic background expiration cleanup (strictly 15 days)
+        await self.cleanup_expired_prescriptions()
+
         if settings.is_supabase_configured:
             params: Dict[str, Any] = {"clinic_id": f"eq.{clinic_id}"}
-            if status:
+            if status == "deleted":
+                params["status"] = "eq.deleted"
+            elif status:
                 params["status"] = f"eq.{status}"
+                params["is_deleted"] = "eq.false"
+            else:
+                params["is_deleted"] = "eq.false"
             if patient_id:
                 params["patient_id"] = f"eq.{patient_id}"
             records = await supabase_client.get("prescriptions", params=params)
             if records is not None:
+                # Extra local guard against any soft-deleted records if is_deleted column missing in RLS view
+                if status != "deleted":
+                    records = [r for r in records if not r.get("is_deleted") and r.get("status") != "deleted"]
                 total = len(records)
                 start = (page - 1) * page_size
                 end = start + page_size
@@ -59,8 +117,12 @@ class PrescriptionService:
             rx for rx in memory_store.prescriptions.values()
             if rx["clinic_id"] == clinic_id
         ]
-        if status:
-            matching = [rx for rx in matching if rx["status"] == status]
+        if status == "deleted":
+            matching = [rx for rx in matching if rx.get("is_deleted") or rx.get("status") == "deleted"]
+        else:
+            matching = [rx for rx in matching if not rx.get("is_deleted") and rx.get("status") != "deleted"]
+            if status:
+                matching = [rx for rx in matching if rx["status"] == status]
         if patient_id:
             matching = [rx for rx in matching if rx.get("patient_id") == patient_id]
 

@@ -24,6 +24,19 @@ export interface PrescriptionLabels {
   signatureLabel: string;
   stampNote: string;
   legalNote: string;
+  regNo: string;
+  years: string;
+  vitalBp: string;
+  vitalPulse: string;
+  vitalTemp: string;
+  vitalSpo2: string;
+  vitalWeight: string;
+  diagnosisConfirmed: string;
+  diagnosisProvisional: string;
+  complaintsPatient: string;
+  findingsDoctor: string;
+  footerEmr: string;
+  footerGenerated: string;
 }
 
 const labelsEn: PrescriptionLabels = {
@@ -46,7 +59,20 @@ const labelsEn: PrescriptionLabels = {
   followUpHeader: 'Follow-Up OPD Visit',
   signatureLabel: "Doctor's Signature / Stamp",
   stampNote: 'Registered Medical Practitioner',
-  legalNote: 'Valid for dispensing at any licensed pharmacy in India. Keep out of reach of children.'
+  legalNote: 'Valid for dispensing at any licensed pharmacy in India. Keep out of reach of children.',
+  regNo: 'Reg. No:',
+  years: 'Yrs',
+  vitalBp: 'BP',
+  vitalPulse: 'Pulse',
+  vitalTemp: 'Temp',
+  vitalSpo2: 'SpO2',
+  vitalWeight: 'Weight',
+  diagnosisConfirmed: '✓ Doctor-Confirmed Diagnosis:',
+  diagnosisProvisional: '⚠ Provisional Assessment (Unconfirmed):',
+  complaintsPatient: 'Chief Complaints / Symptoms (Patient-Reported):',
+  findingsDoctor: 'Clinical Findings (Doctor Examination):',
+  footerEmr: 'Electronic Medical Record',
+  footerGenerated: 'Generated via MediScript Clinical AI'
 };
 
 const labelsHi: PrescriptionLabels = {
@@ -69,7 +95,20 @@ const labelsHi: PrescriptionLabels = {
   followUpHeader: 'अगली जांच / फॉलो-अप तारीख',
   signatureLabel: 'चिकित्सक के हस्ताक्षर एवं मुहर',
   stampNote: 'पंजीकृत चिकित्सक (RMP)',
-  legalNote: 'भारत के किसी भी पंजीकृत मेडिकल स्टोर से दवा लेने हेतु मान्य। बच्चों की पहुँच से दूर रखें।'
+  legalNote: 'भारत के किसी भी पंजीकृत मेडिकल स्टोर से दवा लेने हेतु मान्य। बच्चों की पहुँच से दूर रखें।',
+  regNo: 'पंजीकरण संख्या (Reg. No):',
+  years: 'वर्ष',
+  vitalBp: 'रक्तचाप (BP)',
+  vitalPulse: 'नाड़ी (Pulse)',
+  vitalTemp: 'तापमान (Temp)',
+  vitalSpo2: 'ऑक्सीजन (SpO2)',
+  vitalWeight: 'वजन (Weight)',
+  diagnosisConfirmed: '✓ पुष्ट निदान (Confirmed Diagnosis):',
+  diagnosisProvisional: '⚠ संभावित निदान (Provisional Assessment):',
+  complaintsPatient: 'मुख्य लक्षण एवं तकलीफ (Complaints):',
+  findingsDoctor: 'चिकित्सीय जांच (Doctor Examination):',
+  footerEmr: 'इलेक्ट्रॉनिक मेडिकल रिकॉर्ड',
+  footerGenerated: 'मेडिस्क्रिप्ट क्लिनिकल एआई द्वारा प्रमाणित'
 };
 
 const labelsHinglish: PrescriptionLabels = {
@@ -92,7 +131,20 @@ const labelsHinglish: PrescriptionLabels = {
   followUpHeader: 'Agla Check-up (Follow-Up)',
   signatureLabel: "Doctor ke Dastakhat wa Mohar",
   stampNote: 'Registered Doctor (RMP)',
-  legalNote: 'Kisi bhi registered medical store par dawa lene ke liye maanya. Bachho ki pahuch se door rakhein.'
+  legalNote: 'Kisi bhi registered medical store par dawa lene ke liye maanya. Bachho ki pahuch se door rakhein.',
+  regNo: 'Reg. No:',
+  years: 'Saal',
+  vitalBp: 'BP',
+  vitalPulse: 'Pulse',
+  vitalTemp: 'Temp',
+  vitalSpo2: 'SpO2',
+  vitalWeight: 'Weight',
+  diagnosisConfirmed: '✓ Pakka Nidan (Confirmed Diagnosis):',
+  diagnosisProvisional: '⚠ Sambhavit Nidan (Provisional Assessment):',
+  complaintsPatient: 'Takleef / Symptoms (Patient-Reported):',
+  findingsDoctor: 'Jaanch ki Jankari (Doctor Examination):',
+  footerEmr: 'Electronic Medical Record',
+  footerGenerated: 'MediScript Clinical AI dwara banaya gaya'
 };
 
 export const getPrescriptionLabels = (lang: PrintLanguage): PrescriptionLabels => {
@@ -196,4 +248,100 @@ export const translateAdvice = (adv: string, lang: PrintLanguage): string => {
   }
 
   return adv;
+};
+
+// Translates patient gender
+export const translateGender = (gender: string, lang: PrintLanguage): string => {
+  if (!gender || lang === 'en') return gender;
+  const lower = gender.toLowerCase();
+  if (lang === 'hi') {
+    if (lower === 'male') return 'पुरुष (Male)';
+    if (lower === 'female') return 'महिला (Female)';
+    return 'अन्य (Other)';
+  }
+  if (lang === 'hinglish') {
+    if (lower === 'male') return 'Purush (Male)';
+    if (lower === 'female') return 'Mahila (Female)';
+    return 'Other';
+  }
+  return gender;
+};
+
+// Translates medicine dosage form (Tablet, Capsule, Syrup, etc.)
+export const translateDosageForm = (form: string, lang: PrintLanguage): string => {
+  if (!form || lang === 'en') return form;
+  const lower = form.toLowerCase();
+  if (lang === 'hi') {
+    if (lower.includes('tab')) return 'टैबलेट / गोली';
+    if (lower.includes('cap')) return 'कैप्सूल';
+    if (lower.includes('syr') || lower.includes('susp')) return 'सिरप';
+    if (lower.includes('inj')) return 'इंजेक्शन';
+    if (lower.includes('drop')) return 'ड्रॉप्स';
+    if (lower.includes('oint') || lower.includes('gel') || lower.includes('cream')) return 'मलहम / ऑइंटमेंट';
+    return form;
+  }
+  if (lang === 'hinglish') {
+    if (lower.includes('tab')) return 'Tablet (Goli)';
+    if (lower.includes('cap')) return 'Capsule';
+    if (lower.includes('syr')) return 'Syrup';
+    if (lower.includes('inj')) return 'Injection';
+    if (lower.includes('drop')) return 'Drops';
+    if (lower.includes('oint')) return 'Ointment (Malham)';
+    return form;
+  }
+  return form;
+};
+
+// Translates duration (e.g. 5 days, 1 week)
+export const translateDuration = (duration: string, lang: PrintLanguage): string => {
+  if (!duration || lang === 'en') return duration;
+  const lower = duration.toLowerCase().trim();
+
+  if (lang === 'hi') {
+    // Replace english duration words
+    let translated = duration
+      .replace(/(\d+)\s*days?/gi, '$1 दिन')
+      .replace(/(\d+)\s*weeks?/gi, '$1 सप्ताह')
+      .replace(/(\d+)\s*months?/gi, '$1 महीने')
+      .replace(/for\s+/gi, '')
+      .replace(/(\d+)\s*din/gi, '$1 दिन');
+    return translated;
+  }
+
+  if (lang === 'hinglish') {
+    let translated = duration
+      .replace(/(\d+)\s*days?/gi, '$1 Din')
+      .replace(/(\d+)\s*weeks?/gi, '$1 Hafte')
+      .replace(/(\d+)\s*months?/gi, '$1 Mahine');
+    return translated;
+  }
+
+  return duration;
+};
+
+// Translates follow-up instructions
+export const translateFollowUp = (fu: string, lang: PrintLanguage): string => {
+  if (!fu || lang === 'en') return fu;
+  const lower = fu.toLowerCase();
+
+  if (lang === 'hi') {
+    if (lower.includes('5 day') || lower.includes('5 दिन')) return '५ दिन बाद (After 5 days)';
+    if (lower.includes('3 day') || lower.includes('3 दिन')) return '३ दिन बाद (After 3 days)';
+    if (lower.includes('7 day') || lower.includes('1 week') || lower.includes('सप्ताह')) return '१ सप्ताह बाद (After 1 week)';
+    if (lower.includes('10 day')) return '१० दिन बाद (After 10 days)';
+    if (lower.includes('15 day') || lower.includes('2 week')) return '१५ दिन बाद (After 15 days)';
+    if (lower.includes('1 month') || lower.includes('महीना')) return '१ महीने बाद (After 1 month)';
+    if (lower.includes('sos') || lower.includes('needed')) return 'जरूरत पड़ने पर या तकलीफ बढ़ने पर तुरंत आएं (SOS)';
+    return fu.replace(/after\s+/gi, '').replace(/days?/gi, 'दिन बाद');
+  }
+
+  if (lang === 'hinglish') {
+    if (lower.includes('5 day')) return '5 din baad (After 5 days)';
+    if (lower.includes('3 day')) return '3 din baad (After 3 days)';
+    if (lower.includes('7 day') || lower.includes('1 week')) return '1 hafte baad (After 1 week)';
+    if (lower.includes('sos') || lower.includes('needed')) return 'Zaroorat padne par turant check-up karein (SOS)';
+    return fu.replace(/after\s+/gi, '').replace(/days?/gi, 'din baad');
+  }
+
+  return fu;
 };

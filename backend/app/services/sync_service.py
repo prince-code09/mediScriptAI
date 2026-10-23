@@ -74,55 +74,76 @@ class SyncService:
                         memory_store.patients[entity_id] = patient_data
 
                 elif entity_type == "prescription":
-                    # Clean and format prescription payload
-                    rx_data = {
-                        "id": entity_id,
-                        "clinic_id": request.clinic_id,
-                        "doctor_id": user.id,
-                        "prescription_number": payload.get("prescription_number") or payload.get("prescriptionNumber") or f"MED-{now[:4]}-SYNC",
-                        "date": payload.get("date") or now[:10],
-                        "patient_id": payload.get("patient_id") or payload.get("patientId"),
-                        "patient_name": payload.get("patient_name") or payload.get("patientName", "Patient"),
-                        "patient_age": payload.get("patient_age") or payload.get("patientAge"),
-                        "patient_gender": payload.get("patient_gender") or payload.get("patientGender", "Other"),
-                        "patient_phone": payload.get("patient_phone") or payload.get("patientPhone", ""),
-                        "symptoms": payload.get("symptoms", ""),
-                        "duration_of_symptoms": payload.get("duration_of_symptoms") or payload.get("durationOfSymptoms", ""),
-                        "clinical_findings": payload.get("clinical_findings") or payload.get("clinicalFindings", ""),
-                        "diagnosis": payload.get("diagnosis"),
-                        "vitals": payload.get("vitals", {}),
-                        "medicines": payload.get("medicines", []),
-                        "advice": payload.get("advice", ""),
-                        "follow_up": payload.get("follow_up") or payload.get("followUp", ""),
-                        "tests": payload.get("tests", ""),
-                        "source": payload.get("source", "manual"),
-                        "status": payload.get("status", "draft"),
-                        "sync_status": "synced",
-                        "version": payload.get("version", 1),
-                        "print_language": payload.get("print_language") or payload.get("printLanguage", "en"),
-                        "created_at": payload.get("created_at") or payload.get("createdAt", now),
-                        "updated_at": now
-                    }
-                    if settings.is_supabase_configured:
-                        await supabase_client.insert("prescriptions", rx_data)
-                        await supabase_client.insert("prescription_audit_logs", {
+                    if operation == "permanent_delete":
+                        if settings.is_supabase_configured:
+                            await supabase_client.delete("prescriptions", params={"id": f"eq.{entity_id}"})
+                            await supabase_client.insert("prescription_audit_logs", {
+                                "prescription_id": entity_id,
+                                "user_id": user.id,
+                                "action": "permanent_delete",
+                                "client_operation_id": op_id,
+                                "metadata": {"operation": operation},
+                                "created_at": now
+                            })
+                        memory_store.prescriptions.pop(entity_id, None)
+                    else:
+                        is_deleted = operation in ["soft_delete", "delete"] or payload.get("is_deleted") or payload.get("isDeleted", False)
+                        deleted_at = payload.get("deleted_at") or payload.get("deletedAt") if is_deleted else None
+                        if is_deleted and not deleted_at:
+                            deleted_at = now
+                        rx_status = "deleted" if is_deleted else (payload.get("status") or "draft")
+
+                        # Clean and format prescription payload
+                        rx_data = {
+                            "id": entity_id,
+                            "clinic_id": request.clinic_id,
+                            "doctor_id": user.id,
+                            "prescription_number": payload.get("prescription_number") or payload.get("prescriptionNumber") or f"MED-{now[:4]}-SYNC",
+                            "date": payload.get("date") or now[:10],
+                            "patient_id": payload.get("patient_id") or payload.get("patientId"),
+                            "patient_name": payload.get("patient_name") or payload.get("patientName", "Patient"),
+                            "patient_age": payload.get("patient_age") or payload.get("patientAge"),
+                            "patient_gender": payload.get("patient_gender") or payload.get("patientGender", "Other"),
+                            "patient_phone": payload.get("patient_phone") or payload.get("patientPhone", ""),
+                            "symptoms": payload.get("symptoms", ""),
+                            "duration_of_symptoms": payload.get("duration_of_symptoms") or payload.get("durationOfSymptoms", ""),
+                            "clinical_findings": payload.get("clinical_findings") or payload.get("clinicalFindings", ""),
+                            "diagnosis": payload.get("diagnosis"),
+                            "vitals": payload.get("vitals", {}),
+                            "medicines": payload.get("medicines", []),
+                            "advice": payload.get("advice", ""),
+                            "follow_up": payload.get("follow_up") or payload.get("followUp", ""),
+                            "tests": payload.get("tests", ""),
+                            "source": payload.get("source", "manual"),
+                            "status": rx_status,
+                            "sync_status": "synced",
+                            "version": payload.get("version", 1),
+                            "print_language": payload.get("print_language") or payload.get("printLanguage", "en"),
+                            "is_deleted": is_deleted,
+                            "deleted_at": deleted_at,
+                            "created_at": payload.get("created_at") or payload.get("createdAt", now),
+                            "updated_at": now
+                        }
+                        if settings.is_supabase_configured:
+                            await supabase_client.insert("prescriptions", rx_data)
+                            await supabase_client.insert("prescription_audit_logs", {
+                                "prescription_id": entity_id,
+                                "user_id": user.id,
+                                "action": "sync",
+                                "client_operation_id": op_id,
+                                "metadata": {"operation": operation, "is_deleted": is_deleted},
+                                "created_at": now
+                            })
+                        memory_store.prescriptions[entity_id] = rx_data
+                        memory_store.audit_logs.append({
+                            "id": str(uuid.uuid4()),
                             "prescription_id": entity_id,
                             "user_id": user.id,
                             "action": "sync",
                             "client_operation_id": op_id,
-                            "metadata": {"operation": operation},
+                            "metadata": {"operation": operation, "is_deleted": is_deleted},
                             "created_at": now
                         })
-                    memory_store.prescriptions[entity_id] = rx_data
-                    memory_store.audit_logs.append({
-                        "id": str(uuid.uuid4()),
-                        "prescription_id": entity_id,
-                        "user_id": user.id,
-                        "action": "sync",
-                        "client_operation_id": op_id,
-                        "metadata": {"operation": operation},
-                        "created_at": now
-                    })
 
                 # 3. Record operation into sync_queue
                 queue_entry = {

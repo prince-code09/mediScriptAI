@@ -156,3 +156,33 @@ def test_speech_parsing_hindi_devanagari_support(client: TestClient, auth_header
     assert len(extracted["medicines"]) >= 1
     assert extracted["medicines"][0]["name"] == "Paracetamol"
     assert extracted["medicines"][0]["frequency"] == "1-0-1"
+
+def test_speech_parsing_hinglish_and_phone_support(client: TestClient, auth_headers: dict):
+    # Dictation in Hinglish with phone number and fever temperature
+    dictation = (
+        "Mareez Rohit Verma, age 29 male, phone 9816012345. "
+        "Takleef bukhar 101 degree aur gale me dard 2 din se. "
+        "Paracetamol 650 mg subah sham, Pantoprazole 40 mg subah khali pet. "
+        "Review after 3 din."
+    )
+    response = client.post(
+        "/api/v1/ai/parse-speech",
+        json={"transcript": dictation, "language": "hinglish"},
+        headers=auth_headers
+    )
+    assert response.status_code == 200
+    data = response.json()
+    extracted = data["extracted_data"]
+
+    # Validated field mappings
+    assert extracted["patient_name"] == "Rohit Verma"
+    assert extracted["patient_age"] == 29
+    assert extracted["patient_gender"] == "Male"
+    assert extracted["patient_phone"] == "9816012345"
+    assert extracted["vitals"] is not None
+    assert "101" in extracted["vitals"]["temp"]
+    assert len(extracted["medicines"]) >= 2
+    pcm = next(m for m in extracted["medicines"] if m["name"] == "Paracetamol")
+    pan = next(m for m in extracted["medicines"] if m["name"] == "Pantoprazole")
+    assert pcm["frequency"] == "1-0-1"
+    assert pan["frequency"] == "1-0-0"

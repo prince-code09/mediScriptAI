@@ -78,13 +78,20 @@ class AIService:
             "Extract structured prescription fields from doctor speech in English, Hindi, or Hinglish.\n"
             "STRICT HEALTHCARE SAFETY RULES:\n"
             "1. NEVER fabricate normal vitals (BP, pulse, temp, spo2, weight) if not explicitly spoken.\n"
-            "2. NEVER invent symptoms, findings, or diagnoses. If no diagnosis is spoken, set diagnosis to null.\n"
-            "3. NEVER mark diagnosis as confirmed unless doctor explicitly says 'confirmed diagnosis', 'confirmed case', or 'final diagnosis'. Default is_diagnosis_confirmed to false.\n"
-            "4. NEVER invent medicines, dosages, strengths, frequencies, or durations not spoken.\n"
-            "5. EXTRACT EVERY MENTIONED MEDICINE as its own separate row in the 'medicines' array. Never truncate or stop after the first medicine.\n"
-            "6. If frequency, duration, or dose for a medicine was NOT explicitly mentioned, set that field to empty string \"\" and add a note to 'ambiguities'.\n"
-            "7. If an unclear or phonetically ambiguous word sounds like a possible medicine, do NOT invent or substitute another drug; add it to 'ambiguities' for clinician review.\n"
-            "8. Return a valid JSON object matching the requested schema.\n"
+            "2. If doctor mentions fever temperature (e.g. 'temp 101', 'temperature 99.4 F', 'bukhar 102 degree', 'fever 100 F'), extract into vitals.temp (e.g. '101 °F'). If fever is just described as a complaint without degrees, record 'Fever' under symptoms.\n"
+            "3. NEVER invent symptoms, findings, or diagnoses. If no diagnosis is spoken, set diagnosis to null.\n"
+            "4. NEVER mark diagnosis as confirmed unless doctor explicitly says 'confirmed diagnosis', 'confirmed case', or 'final diagnosis'. Default is_diagnosis_confirmed to false.\n"
+            "5. NEVER invent medicines, dosages, strengths, frequencies, or durations not spoken. Preserve original drug names and strengths exactly.\n"
+            "6. EXTRACT EVERY MENTIONED MEDICINE as its own separate row in the 'medicines' array. Never truncate or stop after the first medicine.\n"
+            "7. Accurately translate Indian frequency terms:\n"
+            "   - 'subah sham' / 'subah shaam' / 'twice daily' / 'BD' -> '1-0-1 (After Food)' or '1-0-1'\n"
+            "   - 'subah khali pet' / 'khali pet' / 'once daily morning' / 'OD' -> '1-0-0 (Morning)' or '1-0-0'\n"
+            "   - 'raat ko' / 'sote samay' / 'bedtime' / 'HS' -> '0-0-1 (At Bedtime)' or '0-0-1'\n"
+            "   - 'din me teen baar' / 'thrice daily' / 'TDS' -> '1-1-1'\n"
+            "   - 'jarurat padne par' / 'jab dard ho' / 'SOS' -> 'SOS'\n"
+            "8. If frequency, duration, or dose for a medicine was NOT explicitly mentioned, set that field to empty string \"\" and add a note to 'ambiguities'. Never guess.\n"
+            "9. If an unclear or phonetically ambiguous word sounds like a possible medicine, do NOT invent or substitute another drug; add it to 'ambiguities' for clinician review.\n"
+            "10. Return a valid JSON object matching the requested schema.\n"
         )
         prompt = (
             f"Doctor Speech ({lang}): \"{transcript}\"\n\n"
@@ -92,6 +99,7 @@ class AIService:
             "- patient_name (string or null)\n"
             "- patient_age (integer or null)\n"
             "- patient_gender (string 'Male'/'Female'/'Other' or null)\n"
+            "- patient_phone (string or null, 10-digit Indian phone/mobile number if spoken, otherwise null)\n"
             "- symptoms (string or null)\n"
             "- duration_of_symptoms (string or null)\n"
             "- clinical_findings (string or null)\n"
@@ -210,6 +218,7 @@ class AIService:
                 patient_name=parsed.get("patient_name"),
                 patient_age=age_val,
                 patient_gender=parsed.get("patient_gender"),
+                patient_phone=parsed.get("patient_phone"),
                 symptoms=syms,
                 duration_of_symptoms=parsed.get("duration_of_symptoms"),
                 clinical_findings=parsed.get("clinical_findings"),
@@ -269,6 +278,12 @@ class AIService:
         elif re.search(r'\b(female|mahila|aurat|girl|woman|महिला|औरत)\b', lower):
             gender = "Female"
 
+        # 3b. Patient Phone (Optional 10-digit mobile)
+        phone = None
+        phone_match = re.search(r'(?:phone|mobile|contact|number|ph)\s*(?:is|number|no|:)?\s*(\+?91[\-\s]?)?([6-9]\d{9})\b', text, re.IGNORECASE)
+        if phone_match:
+            phone = phone_match.group(2)
+
         # 4. Vitals - STRICT: Only extract if explicitly stated in dictation
         vitals = VitalsSchema()
         bp_match = re.search(r'(?:bp|blood pressure)\s*(?:is|hai|:)?\s*(\d{2,3}\s*/\s*\d{2,3})', lower)
@@ -279,7 +294,7 @@ class AIService:
         if pulse_match:
             vitals.pulse = pulse_match.group(1) + " bpm"
 
-        temp_match = re.search(r'(?:temp|temperature|bukhar)\s*(?:is|hai|:)?\s*(\d{2,3}(?:\.\d)?)\s*(?:f|c|deg|degree)?', lower)
+        temp_match = re.search(r'(?:temp|temperature|bukhar)\s*(?:is|hai|:)?\s*(\d{2,3}(?:\.\d)?)\s*(?:f|c|deg|degree)?', lower) or re.search(r'fever\s*(?:of|is|:)?\s*(\d{2,3}(?:\.\d)?)\s*(?:f|deg|degree)?', lower)
         if temp_match:
             vitals.temp = temp_match.group(1) + " °F"
 
@@ -493,6 +508,7 @@ class AIService:
             patient_name=name,
             patient_age=age,
             patient_gender=gender,
+            patient_phone=phone,
             symptoms=symptoms,
             duration_of_symptoms=duration,
             clinical_findings=None,
