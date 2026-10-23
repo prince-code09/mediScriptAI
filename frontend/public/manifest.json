@@ -1,0 +1,16 @@
+{
+  "short_name": "MediScript",
+  "name": "MediScript — AI-Assisted Clinical Prescription App",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192 512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#F7F8FC",
+  "theme_color": "#243B64",
+  "display": "standalone",
+  "orientation": "portrait"
+}

@@ -1,0 +1,78 @@
+
+# ==============================
+# ENVIRONMENT VARIABLES & SECRETS
+# ==============================
+.env
+.env.*
+!.env.example
+
+# ==============================
+# NODE.JS / FRONTEND
+# ==============================
+node_modules/
+**/node_modules/
+
+dist/
+**/dist/
+build/
+**/build/
+
+coverage/
+.npm/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ==============================
+# PYTHON / BACKEND
+# ==============================
+.venv/
+venv/
+ENV/
+**/.venv/
+**/venv/
+
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ==============================
+# DATABASES & PRIVATE DATA
+# ==============================
+*.db
+*.sqlite
+*.sqlite3
+
+uploads/
+private_uploads/
+medical_records/
+
+# ==============================
+# LOGS & TEMPORARY FILES
+# ==============================
+*.log
+*.tmp
+*.bak
+
+# ==============================
+# IDE & OPERATING SYSTEM
+# ==============================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.local
+
+# ==============================
+# BUILD / TOOL CACHES
+# ==============================
+.turbo/
+.cache/
+.parcel-cache/
+.vercel/
