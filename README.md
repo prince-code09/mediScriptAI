@@ -5,6 +5,12 @@ MediScriptAI is an AI-assisted prescription and OPD consultation web application
 
 The application aims to simplify clinical documentation through structured prescription creation, patient information management, and AI-assisted workflows.
 
+## MediScriptAI — AI-Assisted Clinical Prescription System
+
+**Live Website:** [Open MediScriptAI](https://medi-script-ai-mu.vercel.app/)
+
+MediScriptAI is an AI-assisted prescription and OPD consultation web application designed for local doctors, small clinics, and rural healthcare practitioners in India.
+
 ## Features
 
 - Doctor authentication and account management
