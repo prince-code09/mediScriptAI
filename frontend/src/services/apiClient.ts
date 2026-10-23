@@ -185,10 +185,14 @@ export class MediScriptApiClient {
   }
 
   // AI Voice & Refinement
-  async parseSpeech(transcript: string, language = 'en'): Promise<any> {
+  async parseSpeech(transcript: string, language = 'en', knownPatients?: any[]): Promise<any> {
     return this.request<any>('/ai/parse-speech', {
       method: 'POST',
-      body: JSON.stringify({ transcript, language })
+      body: JSON.stringify({
+        transcript,
+        language,
+        known_patients: knownPatients
+      })
     });
   }
 

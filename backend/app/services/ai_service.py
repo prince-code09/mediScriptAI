@@ -1,5 +1,7 @@
 import re
 import json
+import time
+import difflib
 from typing import Optional, List, Dict, Any, Tuple
 import httpx
 
@@ -18,7 +20,7 @@ from app.schemas.prescription import MedicineItemSchema, VitalsSchema
 class AIService:
     """
     Provider-independent AI Service for Clinical Dictation Parsing and Refinement.
-    Implements Gemini AI (gemini-3.5-flash) with deterministic clinical safety boundaries:
+    Implements Gemini AI (gemini-3.5-flash-lite / gemini-3.1-flash-lite) with deterministic clinical safety boundaries:
     - Never fabricates normal vitals or unmentioned symptoms
     - Never infers diagnoses not spoken by the clinician
     - Preserves uncertainty and highlights ambiguity
@@ -26,52 +28,134 @@ class AIService:
     """
 
     async def parse_speech(self, request: SpeechParseRequest) -> SpeechParseResponse:
+        start_time = time.perf_counter()
         transcript = request.transcript.strip()
         lang = request.language or "en"
         confidence_flags: List[str] = []
         ambiguities: List[str] = []
+        known_patients = request.known_patients
 
         if not transcript:
             return SpeechParseResponse(
                 extracted_data=ExtractedPrescriptionData(),
                 confidence_flags=["Empty audio dictation transcript provided."],
                 ambiguities=["No clinical speech detected."],
-                provider_used="deterministic_parser"
+                provider_used="deterministic_parser",
+                processing_time_ms=0.0
             )
 
-        # 1. Attempt Gemini 3.5 Flash if configured
+        # 1. Attempt Gemini (flash-lite models prioritized for speed and quota resilience)
         if settings.is_ai_configured and settings.AI_PROVIDER.lower() == "gemini":
             try:
-                gemini_result = await self._call_gemini_parse(transcript, lang, confidence_flags, ambiguities)
+                gemini_result, model_used = await self._call_gemini_parse(
+                    transcript, lang, confidence_flags, ambiguities, known_patients=known_patients
+                )
                 if gemini_result:
+                    elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
                     return SpeechParseResponse(
                         extracted_data=gemini_result,
                         confidence_flags=confidence_flags,
                         ambiguities=ambiguities,
-                        provider_used="gemini-3.5-flash"
+                        provider_used=model_used,
+                        processing_time_ms=elapsed_ms
                     )
             except Exception as e:
                 logger.warning(f"Gemini parse exception, falling back to deterministic extractor: {type(e).__name__}")
                 confidence_flags.append("Gemini provider timed out or failed; used safe deterministic clinical parser.")
 
         # 2. Safe Deterministic Clinical Extractor with zero-fabrication guarantee
-        extracted = self._extract_clinically_safe_data(transcript, lang, confidence_flags, ambiguities)
+        extracted = self._extract_clinically_safe_data(
+            transcript, lang, confidence_flags, ambiguities, known_patients=known_patients
+        )
+        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
         return SpeechParseResponse(
             extracted_data=extracted,
             confidence_flags=confidence_flags,
             ambiguities=ambiguities,
-            provider_used="deterministic_clinical_extractor"
+            provider_used="deterministic_clinical_extractor",
+            processing_time_ms=elapsed_ms
         )
+
+    def _match_known_patient(
+        self,
+        candidate_name: Optional[str],
+        known_patients: Optional[List[Dict[str, Any]]]
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Fuzzy & phonetic patient name matching against registered clinic patients.
+        Returns: (matched_patient_name, matched_patient_id, doctor_disambiguation_note)
+        Ensures doctor confirmation is required if phonetic/spelling variation occurs.
+        """
+        if not candidate_name or not known_patients:
+            return None, None, None
+
+        c_clean = candidate_name.strip()
+        c_lower = c_clean.lower()
+        c_tokens = set(re.findall(r'\w+', c_lower))
+
+        best_match = None
+        best_score = 0.0
+
+        for p in known_patients:
+            if not isinstance(p, dict):
+                continue
+            p_name = (p.get("name") or "").strip()
+            if not p_name:
+                continue
+
+            p_lower = p_name.lower()
+            p_tokens = set(re.findall(r'\w+', p_lower))
+
+            # 1. Exact match
+            if c_lower == p_lower:
+                return p_name, str(p.get("id") or ""), None
+
+            # 2. Sequence matcher ratio
+            seq_ratio = difflib.SequenceMatcher(None, c_lower, p_lower).ratio()
+
+            # 3. Token similarity
+            overlap = len(c_tokens.intersection(p_tokens))
+            token_ratio = (2.0 * overlap) / (len(c_tokens) + len(p_tokens)) if (c_tokens and p_tokens) else 0.0
+
+            # 4. Partial token / substring match (e.g. 'Mrya' vs 'Maurya')
+            sub_match = False
+            for ct in c_tokens:
+                for pt in p_tokens:
+                    if len(ct) >= 3 and len(pt) >= 3:
+                        sub_ratio = difflib.SequenceMatcher(None, ct, pt).ratio()
+                        if sub_ratio >= 0.72 or ct in pt or pt in ct:
+                            sub_match = True
+                            break
+
+            combined_score = max(seq_ratio, (seq_ratio * 0.5 + token_ratio * 0.5))
+            if sub_match and combined_score < 0.70:
+                combined_score = max(combined_score, 0.72)
+
+            if combined_score > best_score:
+                best_score = combined_score
+                best_match = (p_name, str(p.get("id") or ""))
+
+        # Threshold for suggestion: >= 0.68
+        if best_match and best_score >= 0.68:
+            matched_name, matched_id = best_match
+            if matched_name.lower() != c_lower:
+                note = f"Transcribed patient name '{c_clean}' closely matches registered patient '{matched_name}'. Doctor confirmation required."
+                return matched_name, matched_id, note
+            else:
+                return matched_name, matched_id, None
+
+        return None, None, None
 
     async def _call_gemini_parse(
         self,
         transcript: str,
         lang: str,
         flags: List[str],
-        ambiguities: List[str]
-    ) -> Optional[ExtractedPrescriptionData]:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={settings.AI_API_KEY}"
+        ambiguities: List[str],
+        known_patients: Optional[List[Dict[str, Any]]] = None
+    ) -> Tuple[Optional[ExtractedPrescriptionData], str]:
+        models_to_try = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"]
         
         system_instruction = (
             "You are an expert clinical transcription and structuring engine for Indian clinics and OPDs.\n"
@@ -81,7 +165,7 @@ class AIService:
             "2. If doctor mentions fever temperature (e.g. 'temp 101', 'temperature 99.4 F', 'bukhar 102 degree', 'fever 100 F'), extract into vitals.temp (e.g. '101 °F'). If fever is just described as a complaint without degrees, record 'Fever' under symptoms.\n"
             "3. NEVER invent symptoms, findings, or diagnoses. If no diagnosis is spoken, set diagnosis to null.\n"
             "4. NEVER mark diagnosis as confirmed unless doctor explicitly says 'confirmed diagnosis', 'confirmed case', or 'final diagnosis'. Default is_diagnosis_confirmed to false.\n"
-            "5. NEVER invent medicines, dosages, strengths, frequencies, or durations not spoken. Preserve original drug names and strengths exactly.\n"
+            "5. NEVER invent medicines, dosages, strengths, frequencies, or durations not spoken. Standardize Hindi/Devanagari medicine names to their standard clinical generic English names (e.g. 'पैरासिटामोल' -> 'Paracetamol', 'सेफिक्सिम' -> 'Cefixime', 'अज़ीथ्रोमाइसिन' -> 'Azithromycin') so they print correctly on prescriptions.\n"
             "6. EXTRACT EVERY MENTIONED MEDICINE as its own separate row in the 'medicines' array. Never truncate or stop after the first medicine.\n"
             "7. Accurately translate Indian frequency terms:\n"
             "   - 'subah sham' / 'subah shaam' / 'twice daily' / 'BD' -> '1-0-1 (After Food)' or '1-0-1'\n"
@@ -93,10 +177,25 @@ class AIService:
             "9. If an unclear or phonetically ambiguous word sounds like a possible medicine, do NOT invent or substitute another drug; add it to 'ambiguities' for clinician review.\n"
             "10. Return a valid JSON object matching the requested schema.\n"
         )
+        patient_hint = ""
+        if known_patients:
+            known_names = [p.get("name") for p in known_patients if isinstance(p, dict) and p.get("name")]
+            if known_names:
+                patient_hint = (
+                    f"\nRegistered clinic patients: {json.dumps(known_names[:30])}\n"
+                    "If the patient name spoken closely matches or phonetically resembles one of the registered patients "
+                    "(e.g., spoken 'Sanskar Mrya' or 'Mrya' vs registered 'Sanskar Maurya'), "
+                    "put the suggested registered name in 'patient_name_suggestion', and registered ID in 'patient_id'. "
+                    "Preserve what was actually spoken in 'patient_name'.\n"
+                )
+
         prompt = (
             f"Doctor Speech ({lang}): \"{transcript}\"\n\n"
+            f"{patient_hint}"
             "Extract into JSON with keys:\n"
             "- patient_name (string or null)\n"
+            "- patient_name_suggestion (string or null, suggested registered patient name if phonetically matched, otherwise null)\n"
+            "- patient_id (string or null, registered patient id if matched, otherwise null)\n"
             "- patient_age (integer or null)\n"
             "- patient_gender (string 'Male'/'Female'/'Other' or null)\n"
             "- patient_phone (string or null, 10-digit Indian phone/mobile number if spoken, otherwise null)\n"
@@ -122,121 +221,145 @@ class AIService:
             }
         }
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code != 200:
-                logger.warning(f"Gemini API returned status {resp.status_code}")
-                flags.append(f"Gemini API returned status {resp.status_code}. Used fallback extractor.")
-                return None
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.AI_API_KEY}"
+            try:
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code != 200:
+                        logger.warning(f"Gemini API model {model} returned status {resp.status_code}")
+                        continue
 
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if not candidates:
-                return None
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if not parts or not parts[0].get("text"):
-                return None
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        continue
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if not parts or not parts[0].get("text"):
+                        continue
 
-            parsed = json.loads(parts[0]["text"])
-            
-            # Normalize symptoms if array
-            syms = parsed.get("symptoms")
-            if isinstance(syms, list):
-                syms = ", ".join([str(s) for s in syms if s])
-            
-            # Normalize advice if array
-            adv = parsed.get("advice")
-            if isinstance(adv, list):
-                adv = " ".join([str(a) for a in adv if a])
+                    parsed = json.loads(parts[0]["text"])
+                    
+                    # Normalize symptoms if array
+                    syms = parsed.get("symptoms")
+                    if isinstance(syms, list):
+                        syms = ", ".join([str(s) for s in syms if s])
+                    
+                    # Normalize advice if array
+                    adv = parsed.get("advice")
+                    if isinstance(adv, list):
+                        adv = " ".join([str(a) for a in adv if a])
 
-            # Process medicines
-            meds_list = []
-            for i, m in enumerate(parsed.get("medicines", [])):
-                if isinstance(m, dict) and m.get("name"):
-                    med_name = str(m["name"]).strip()
-                    med_strength = str(m.get("strength") or "").strip()
-                    med_form = str(m.get("dosage_form") or "Tablet").strip()
-                    med_dose = str(m.get("dose") or "").strip()
-                    med_freq = str(m.get("frequency") or "").strip()
-                    med_dur = str(m.get("duration") or "").strip()
-                    med_inst = str(m.get("instructions") or "").strip()
-                    med_route = m.get("route")
+                    # Process medicines
+                    meds_list = []
+                    for i, m in enumerate(parsed.get("medicines", [])):
+                        if isinstance(m, dict) and m.get("name"):
+                            med_name = str(m["name"]).strip()
+                            med_strength = str(m.get("strength") or "").strip()
+                            med_form = str(m.get("dosage_form") or "Tablet").strip()
+                            med_dose = str(m.get("dose") or "").strip()
+                            med_freq = str(m.get("frequency") or "").strip()
+                            med_dur = str(m.get("duration") or "").strip()
+                            med_inst = str(m.get("instructions") or "").strip()
+                            med_route = m.get("route")
 
-                    # If frequency or duration was omitted in speech, flag for doctor verification
-                    if not med_freq:
-                        ambiguities.append(f"Frequency for '{med_name}' was not specified in dictation. Doctor verification required.")
-                    if not med_dur:
-                        flags.append(f"Duration for '{med_name}' was not specified.")
+                            # If frequency or duration was omitted in speech, flag for doctor verification
+                            if not med_freq:
+                                ambiguities.append(f"Frequency for '{med_name}' was not specified in dictation. Doctor verification required.")
+                            if not med_dur:
+                                flags.append(f"Duration for '{med_name}' was not specified.")
 
-                    meds_list.append(MedicineItemSchema(
-                        id=f"med-{i+1}",
-                        name=med_name,
-                        strength=med_strength,
-                        dosage_form=med_form,
-                        dose=med_dose,
-                        frequency=med_freq,
-                        duration=med_dur,
-                        instructions=med_inst,
-                        route=med_route
-                    ))
+                            meds_list.append(MedicineItemSchema(
+                                id=f"med-{i+1}",
+                                name=med_name,
+                                strength=med_strength,
+                                dosage_form=med_form,
+                                dose=med_dose,
+                                frequency=med_freq,
+                                duration=med_dur,
+                                instructions=med_inst,
+                                route=med_route
+                            ))
 
-            # Process vitals
-            v_data = parsed.get("vitals")
-            vitals_obj = None
-            if isinstance(v_data, dict) and any(v_data.values()):
-                vitals_obj = VitalsSchema(
-                    bp=v_data.get("bp"),
-                    pulse=v_data.get("pulse"),
-                    temp=v_data.get("temp"),
-                    spo2=v_data.get("spo2"),
-                    weight=v_data.get("weight")
-                )
+                    # Process vitals
+                    v_data = parsed.get("vitals")
+                    vitals_obj = None
+                    if isinstance(v_data, dict) and any(v_data.values()):
+                        vitals_obj = VitalsSchema(
+                            bp=v_data.get("bp"),
+                            pulse=v_data.get("pulse"),
+                            temp=v_data.get("temp"),
+                            spo2=v_data.get("spo2"),
+                            weight=v_data.get("weight")
+                        )
 
-            # Append any flags from Gemini
-            for f in parsed.get("confidence_flags") or []:
-                flags.append(str(f))
-            for a in parsed.get("ambiguities") or []:
-                ambiguities.append(str(a))
+                    # Append any flags from Gemini
+                    for f in parsed.get("confidence_flags") or []:
+                        flags.append(str(f))
+                    for a in parsed.get("ambiguities") or []:
+                        ambiguities.append(str(a))
 
-            if not parsed.get("diagnosis"):
-                flags.append("No explicit diagnosis stated in dictation; field left blank for doctor confirmation.")
+                    if not parsed.get("diagnosis"):
+                        flags.append("No explicit diagnosis stated in dictation; field left blank for doctor confirmation.")
 
-            # Age normalization
-            age_val = parsed.get("patient_age")
-            if age_val is not None:
-                try:
-                    age_val = int(age_val)
-                except (ValueError, TypeError):
-                    age_val = None
+                    # Age normalization
+                    age_val = parsed.get("patient_age")
+                    if age_val is not None:
+                        try:
+                            age_val = int(age_val)
+                        except (ValueError, TypeError):
+                            age_val = None
 
-            # Confirmed diagnosis explicit check
-            is_confirmed = bool(parsed.get("is_diagnosis_confirmed"))
-            if not is_confirmed and parsed.get("diagnosis"):
-                flags.append("Provisional diagnosis identified; requires explicit doctor confirmation.")
+                    # Confirmed diagnosis explicit check
+                    is_confirmed = bool(parsed.get("is_diagnosis_confirmed"))
+                    if not is_confirmed and parsed.get("diagnosis"):
+                        flags.append("Provisional diagnosis identified; requires explicit doctor confirmation.")
 
-            return ExtractedPrescriptionData(
-                patient_name=parsed.get("patient_name"),
-                patient_age=age_val,
-                patient_gender=parsed.get("patient_gender"),
-                patient_phone=parsed.get("patient_phone"),
-                symptoms=syms,
-                duration_of_symptoms=parsed.get("duration_of_symptoms"),
-                clinical_findings=parsed.get("clinical_findings"),
-                diagnosis=parsed.get("diagnosis"),
-                is_diagnosis_confirmed=is_confirmed,
-                consultation_report=parsed.get("consultation_report"),
-                vitals=vitals_obj,
-                medicines=meds_list,
-                advice=adv,
-                follow_up=parsed.get("follow_up")
-            )
+                    # Known patients matching safeguard
+                    parsed_name = parsed.get("patient_name")
+                    sugg_name = parsed.get("patient_name_suggestion")
+                    matched_id = parsed.get("patient_id")
+
+                    if known_patients:
+                        auto_sugg, auto_id, auto_note = self._match_known_patient(parsed_name or sugg_name, known_patients)
+                        if auto_sugg:
+                            sugg_name = auto_sugg
+                            matched_id = auto_id
+                            if auto_note and auto_note not in ambiguities:
+                                ambiguities.append(auto_note)
+
+                    return ExtractedPrescriptionData(
+                        patient_name=parsed_name,
+                        patient_name_suggestion=sugg_name,
+                        patient_id=matched_id,
+                        patient_age=age_val,
+                        patient_gender=parsed.get("patient_gender"),
+                        patient_phone=parsed.get("patient_phone"),
+                        symptoms=syms,
+                        duration_of_symptoms=parsed.get("duration_of_symptoms"),
+                        clinical_findings=parsed.get("clinical_findings"),
+                        diagnosis=parsed.get("diagnosis"),
+                        is_diagnosis_confirmed=is_confirmed,
+                        consultation_report=parsed.get("consultation_report"),
+                        vitals=vitals_obj,
+                        medicines=meds_list,
+                        advice=adv,
+                        follow_up=parsed.get("follow_up")
+                    ), model
+            except Exception as e:
+                logger.warning(f"Gemini API model {model} attempt failed: {type(e).__name__}")
+                continue
+
+        flags.append("Gemini models unavailable; used fallback deterministic extractor.")
+        return None, "fallback"
 
     def _extract_clinically_safe_data(
         self,
         text: str,
         lang: str,
         flags: List[str],
-        ambiguities: List[str]
+        ambiguities: List[str],
+        known_patients: Optional[List[Dict[str, Any]]] = None
     ) -> ExtractedPrescriptionData:
         lower = text.lower()
         
@@ -504,8 +627,18 @@ class AIService:
 
         consultation_report = "\n\n".join(report_parts)
 
+        # Patient name verification against registered clinic patients
+        suggested_name = None
+        matched_patient_id = None
+        if known_patients and name:
+            suggested_name, matched_patient_id, match_note = self._match_known_patient(name, known_patients)
+            if match_note and match_note not in ambiguities:
+                ambiguities.append(match_note)
+
         return ExtractedPrescriptionData(
             patient_name=name,
+            patient_name_suggestion=suggested_name,
+            patient_id=matched_patient_id,
             patient_age=age,
             patient_gender=gender,
             patient_phone=phone,
@@ -666,7 +799,7 @@ class AIService:
         instruction: str,
         lang: str
     ) -> Optional[RefinePrescriptionResponse]:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={settings.AI_API_KEY}"
+        models_to_try = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"]
         prompt = (
             "You are an expert AI clinical prescription assistant.\n"
             "A doctor provided a correction instruction on an existing prescription draft.\n"
@@ -687,35 +820,42 @@ class AIService:
                 "temperature": 0.1
             }
         }
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code != 200:
-                logger.warning(f"Gemini Refine returned status {resp.status_code}")
-                return None
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if not candidates:
-                return None
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if not parts or not parts[0].get("text"):
-                return None
-            parsed = json.loads(parts[0]["text"])
-            
-            changes = []
-            for ch in parsed.get("changes", []):
-                if isinstance(ch, dict) and "field" in ch:
-                    changes.append(ProposedChangeItem(
-                        field=str(ch["field"]),
-                        original_value=ch.get("original_value"),
-                        proposed_value=ch.get("proposed_value"),
-                        explanation=str(ch.get("explanation") or f"Updated {ch['field']}")
-                    ))
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.AI_API_KEY}"
+            try:
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code != 200:
+                        logger.warning(f"Gemini Refine model {model} returned status {resp.status_code}")
+                        continue
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        continue
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if not parts or not parts[0].get("text"):
+                        continue
+                    parsed = json.loads(parts[0]["text"])
+                    
+                    changes = []
+                    for ch in parsed.get("changes", []):
+                        if isinstance(ch, dict) and "field" in ch:
+                            changes.append(ProposedChangeItem(
+                                field=str(ch["field"]),
+                                original_value=ch.get("original_value"),
+                                proposed_value=ch.get("proposed_value"),
+                                explanation=str(ch.get("explanation") or f"Updated {ch['field']}")
+                            ))
 
-            return RefinePrescriptionResponse(
-                proposed_prescription=parsed.get("proposed_prescription", current),
-                changes=changes,
-                clarification_needed=parsed.get("clarification_needed"),
-                provider_used="gemini-3.5-flash"
-            )
+                    return RefinePrescriptionResponse(
+                        proposed_prescription=parsed.get("proposed_prescription", current),
+                        changes=changes,
+                        clarification_needed=parsed.get("clarification_needed"),
+                        provider_used=model
+                    )
+            except Exception as e:
+                logger.warning(f"Gemini refine model {model} attempt failed: {type(e).__name__}")
+                continue
+        return None
 
 ai_service = AIService()

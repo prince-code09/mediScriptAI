@@ -133,11 +133,19 @@ export const PrescriptionForm: React.FC<Props> = ({ onPreview, initialPrescripti
       setIsDiagnosisConfirmed(Boolean(stagedVoiceData.isDiagnosisConfirmed));
       setConsultationReport(stagedVoiceData.consultationReport || '');
       
-      const matched = patients.find(p => p.name.toLowerCase() === (stagedVoiceData.patientName || '').toLowerCase());
-      if (matched) {
-        setSelectedPatientId(matched.id);
-        setPatientPhone(matched.phone);
-        setPatientAllergies(matched.allergies);
+      // Check if patient matches registered patients
+      const exactMatch = patients.find(p => p.name.toLowerCase() === (stagedVoiceData.patientName || '').toLowerCase());
+      if (exactMatch) {
+        setSelectedPatientId(exactMatch.id);
+        if (!stagedVoiceData.patientPhone && exactMatch.phone) setPatientPhone(exactMatch.phone);
+        setPatientAllergies(exactMatch.allergies);
+      } else if (stagedVoiceData.patientId && (!stagedVoiceData.patientNameSuggestion || stagedVoiceData.patientNameSuggestion.toLowerCase() === (stagedVoiceData.patientName || '').toLowerCase())) {
+        const idMatch = patients.find(p => p.id === stagedVoiceData.patientId);
+        if (idMatch) {
+          setSelectedPatientId(idMatch.id);
+          if (!stagedVoiceData.patientPhone && idMatch.phone) setPatientPhone(idMatch.phone);
+          setPatientAllergies(idMatch.allergies);
+        }
       }
 
       if (stagedVoiceData.vitals) {
@@ -179,6 +187,22 @@ export const PrescriptionForm: React.FC<Props> = ({ onPreview, initialPrescripti
       setPatientPhone(p.phone);
       setPatientAllergies(p.allergies);
       showToast(`Selected patient: ${p.name}`, 'info');
+    }
+  };
+
+  // One-click confirmation for phonetically matched registered patient
+  const handleConfirmSuggestedPatient = (suggestedName: string, suggestedId?: string) => {
+    setPatientName(suggestedName);
+    const matched = patients.find(p => (suggestedId && p.id === suggestedId) || p.name.toLowerCase() === suggestedName.toLowerCase());
+    if (matched) {
+      setSelectedPatientId(matched.id);
+      if (matched.phone) setPatientPhone(matched.phone);
+      if (matched.age) setPatientAge(matched.age);
+      if (matched.gender) setPatientGender(matched.gender);
+      if (matched.allergies) setPatientAllergies(matched.allergies);
+      showToast(`Confirmed registered patient: ${matched.name}`, 'info');
+    } else {
+      showToast(`Updated patient name to "${suggestedName}"`, 'info');
     }
   };
 
@@ -904,6 +928,44 @@ export const PrescriptionForm: React.FC<Props> = ({ onPreview, initialPrescripti
               onChange={(e) => setPatientName(e.target.value)}
               style={{ width: '100%' }}
             />
+            {stagedVoiceData?.patientNameSuggestion && stagedVoiceData.patientNameSuggestion.toLowerCase() !== (patientName || '').toLowerCase() && (
+              <div 
+                style={{
+                  marginTop: '6px',
+                  padding: '6px 10px',
+                  background: 'rgba(245, 158, 11, 0.12)',
+                  border: '1px solid rgba(245, 158, 11, 0.35)',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '8px',
+                  fontSize: '0.78rem',
+                  color: '#fbbf24'
+                }}
+              >
+                <span>
+                  Matches registered: <strong>"{stagedVoiceData.patientNameSuggestion}"</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleConfirmSuggestedPatient(stagedVoiceData.patientNameSuggestion, stagedVoiceData.patientId)}
+                  style={{
+                    background: '#d97706',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '4px',
+                    padding: '3px 8px',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  Use "{stagedVoiceData.patientNameSuggestion}"
+                </button>
+              </div>
+            )}
           </div>
 
           <div>

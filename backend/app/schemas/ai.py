@@ -5,9 +5,12 @@ from app.schemas.prescription import MedicineItemSchema, VitalsSchema
 class SpeechParseRequest(BaseModel):
     transcript: str = Field(..., min_length=1)
     language: Optional[str] = Field(default="en", pattern="^(en|hi|hinglish)$")
+    known_patients: Optional[List[Dict[str, Any]]] = None
 
 class ExtractedPrescriptionData(BaseModel):
     patient_name: Optional[str] = None
+    patient_name_suggestion: Optional[str] = None
+    patient_id: Optional[str] = None
     patient_age: Optional[int] = None
     patient_gender: Optional[str] = None
     patient_phone: Optional[str] = None
@@ -28,6 +31,7 @@ class SpeechParseResponse(BaseModel):
     confidence_flags: List[str] = []
     ambiguities: List[str] = []
     provider_used: str = "deterministic_parser"
+    processing_time_ms: Optional[float] = None
 
 class ProposedChangeItem(BaseModel):
     field: str

@@ -55,7 +55,7 @@ const normalizeClinicalSpeech = (text: string): string => {
 };
 
 export const VoiceOrb3D: React.FC = () => {
-  const { setCurrentPage, stagedVoiceData, setStagedVoiceData, startNewConsultation, showToast } = useApp();
+  const { setCurrentPage, stagedVoiceData, setStagedVoiceData, startNewConsultation, showToast, patients } = useApp();
   
   const [voiceState, setVoiceState] = useState<VoiceAssistantState>('idle');
   const [selectedLang, setSelectedLang] = useState<Language>('en');
@@ -473,12 +473,22 @@ export const VoiceOrb3D: React.FC = () => {
     setVoiceState('processing');
 
     try {
-      // Call backend Gemini AI endpoint with the latest transcript
-      const aiResponse = await apiClient.parseSpeech(text, selectedLang);
+      const knownPatients = (patients || []).map(p => ({
+        id: p.id,
+        name: p.name,
+        phone: p.phone,
+        age: p.age,
+        gender: p.gender
+      }));
+
+      // Call backend Gemini AI endpoint with the latest transcript and known registered patients
+      const aiResponse = await apiClient.parseSpeech(text, selectedLang, knownPatients);
       if (aiResponse && aiResponse.extracted_data) {
         const ed = aiResponse.extracted_data;
         const normalized = {
           patientName: ed.patient_name || '',
+          patientNameSuggestion: ed.patient_name_suggestion || '',
+          patientId: ed.patient_id || '',
           patientAge: ed.patient_age !== undefined && ed.patient_age !== null ? ed.patient_age : '',
           patientGender: ed.patient_gender || 'Male',
           patientPhone: ed.patient_phone || '',
@@ -513,14 +523,15 @@ export const VoiceOrb3D: React.FC = () => {
           language: selectedLang,
           confidenceFlags: aiResponse.confidence_flags || [],
           ambiguities: aiResponse.ambiguities || [],
-          providerUsed: aiResponse.provider_used || 'gemini'
+          providerUsed: aiResponse.provider_used || 'gemini',
+          processingTimeMs: aiResponse.processing_time_ms
         };
 
         setStagedVoiceData(normalized);
         setVoiceState('idle');
         showToast(
           aiResponse.provider_used?.includes('gemini')
-            ? 'Prescription draft generated with Gemini AI! Review and confirm below.'
+            ? `Prescription draft generated with Gemini AI (${aiResponse.processing_time_ms ? Math.round(aiResponse.processing_time_ms) + 'ms' : 'fast'})! Review and confirm below.`
             : 'Prescription draft generated! Review and confirm below.',
           'success'
         );
@@ -533,8 +544,23 @@ export const VoiceOrb3D: React.FC = () => {
 
     // Resilient offline fallback using safe clinical extractor (strictly parses text without sample defaults)
     const extracted = speechService.extractPrescriptionFromSpeech(text);
+    let offlineSuggestion = '';
+    let offlinePatientId = '';
+    if (patients && extracted.patientName) {
+      const normName = extracted.patientName.toLowerCase().trim();
+      const matchedP = patients.find(p => {
+        const pn = p.name.toLowerCase().trim();
+        return pn === normName || pn.includes(normName) || normName.includes(pn);
+      });
+      if (matchedP) {
+        offlineSuggestion = matchedP.name;
+        offlinePatientId = matchedP.id;
+      }
+    }
     const offlineNormalized = {
       ...extracted,
+      patientNameSuggestion: offlineSuggestion,
+      patientId: offlinePatientId,
       rawDictation: text,
       source: 'voice' as const,
       language: selectedLang,
