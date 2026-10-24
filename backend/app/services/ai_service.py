@@ -163,19 +163,20 @@ class AIService:
             "STRICT HEALTHCARE SAFETY RULES:\n"
             "1. NEVER fabricate normal vitals (BP, pulse, temp, spo2, weight) if not explicitly spoken.\n"
             "2. If doctor mentions fever temperature (e.g. 'temp 101', 'temperature 99.4 F', 'bukhar 102 degree', 'fever 100 F'), extract into vitals.temp (e.g. '101 °F'). If fever is just described as a complaint without degrees, record 'Fever' under symptoms.\n"
-            "3. NEVER invent symptoms, findings, or diagnoses. If no diagnosis is spoken, set diagnosis to null.\n"
+            "3. NEVER invent symptoms, findings, or diagnoses. If no diagnosis is spoken, set diagnosis to null. Do NOT treat medicine names (e.g. 'Cough Syrup') as patient symptoms/complaints.\n"
             "4. NEVER mark diagnosis as confirmed unless doctor explicitly says 'confirmed diagnosis', 'confirmed case', or 'final diagnosis'. Default is_diagnosis_confirmed to false.\n"
-            "5. NEVER invent medicines, dosages, strengths, frequencies, or durations not spoken. Standardize Hindi/Devanagari medicine names to their standard clinical generic English names (e.g. 'पैरासिटामोल' -> 'Paracetamol', 'सेफिक्सिम' -> 'Cefixime', 'अज़ीथ्रोमाइसिन' -> 'Azithromycin') so they print correctly on prescriptions.\n"
-            "6. EXTRACT EVERY MENTIONED MEDICINE as its own separate row in the 'medicines' array. Never truncate or stop after the first medicine.\n"
-            "7. Accurately translate Indian frequency terms:\n"
+            "5. PATIENT DETAILS ACCURACY: Extract ONLY the actual patient name into 'patient_name'. Do NOT attach age, gender, complaints, or words like 'male', 'female', 'saal', 'fever' to the patient's name. Extract age into 'patient_age' and gender into 'patient_gender'. If name is in Devanagari Hindi or English, preserve it faithfully.\n"
+            "6. EXTRACT EVERY EXPLICITLY MENTIONED MEDICINE as its own separate row in the 'medicines' array. Never truncate, collapse, or stop after the first medicine. For example, if 'Paracetamol 650 mg, Dolo 650, and cough syrup' are dictated, extract 3 distinct medicines: 'Paracetamol', 'Dolo 650', and 'Cough Syrup'. NEVER collapse Dolo and Paracetamol into one item.\n"
+            "7. NEVER invent medicines, dosages, strengths, frequencies, or durations not spoken. Standardize Hindi/Devanagari medicine names to their standard clinical generic English names (e.g. 'पैरासिटामोल' -> 'Paracetamol', 'सेफिक्सिम' -> 'Cefixime', 'अज़ीथ्रोमाइसिन' -> 'Azithromycin') so they print correctly on prescriptions.\n"
+            "8. Accurately translate Indian frequency terms:\n"
             "   - 'subah sham' / 'subah shaam' / 'twice daily' / 'BD' -> '1-0-1 (After Food)' or '1-0-1'\n"
             "   - 'subah khali pet' / 'khali pet' / 'once daily morning' / 'OD' -> '1-0-0 (Morning)' or '1-0-0'\n"
             "   - 'raat ko' / 'sote samay' / 'bedtime' / 'HS' -> '0-0-1 (At Bedtime)' or '0-0-1'\n"
             "   - 'din me teen baar' / 'thrice daily' / 'TDS' -> '1-1-1'\n"
             "   - 'jarurat padne par' / 'jab dard ho' / 'SOS' -> 'SOS'\n"
-            "8. If frequency, duration, or dose for a medicine was NOT explicitly mentioned, set that field to empty string \"\" and add a note to 'ambiguities'. Never guess.\n"
-            "9. If an unclear or phonetically ambiguous word sounds like a possible medicine, do NOT invent or substitute another drug; add it to 'ambiguities' for clinician review.\n"
-            "10. Return a valid JSON object matching the requested schema.\n"
+            "9. If frequency, duration, or dose for a medicine was NOT explicitly mentioned, set that field to empty string \"\" and add a note to 'ambiguities'. Never guess.\n"
+            "10. If an unclear or phonetically ambiguous word sounds like a possible medicine, do NOT invent or substitute another drug; add it to 'ambiguities' for clinician review.\n"
+            "11. Return a valid JSON object matching the requested schema.\n"
         )
         patient_hint = ""
         if known_patients:
@@ -224,7 +225,7 @@ class AIService:
         for model in models_to_try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.AI_API_KEY}"
             try:
-                async with httpx.AsyncClient(timeout=6.0) as client:
+                async with httpx.AsyncClient(timeout=12.0) as client:
                     resp = await client.post(url, json=payload)
                     if resp.status_code != 200:
                         logger.warning(f"Gemini API model {model} returned status {resp.status_code}")
@@ -362,26 +363,29 @@ class AIService:
         known_patients: Optional[List[Dict[str, Any]]] = None
     ) -> ExtractedPrescriptionData:
         lower = text.lower()
-        
-        # 1. Patient Name extraction (Supports English, Hinglish, and Hindi Devanagari)
+
+        # 1. Delimiters & Patient Name extraction (Supports English, Hinglish, and Hindi Devanagari)
+        END_BOUNDARIES = r'(?:,|\.|(?:age|umar|years|year|saal|yrs|old|उम्र|साल|male|female|purush|mahila|पुरुष|महिला|complaints?|takleef|problem|shikayat|तकलीफ|शिकायत|suffering|having|with|ko|tab|tablet|cap|capsule|syrup|dawa)|\d{1,3})'
         name = None
         name_patterns = [
-            r'(?:patient\s+name|patient|name|mareez|मरीज\s+का\s+नाम|मरीज|shri|smt|mr\.|mrs\.)\s*(?::|\bis\b|\bhai\b)?\s*([A-Za-z\u0900-\u097F\s]+?)(?:,|\.|\b(?:age|umar|years|saal|उम्र|साल)\b|\d+)',
-            r'(?:patient\s+name\s+is|patient\s+is|patient)\s+([A-Za-z\u0900-\u097F\s]+?)(?:,|\.|\b(?:age|umar)\b|\d+)'
+            rf'(?:patient\s+name|patient|mareez|मरीज\s+का\s+नाम|मरीज|shri|smt|mr\.|mrs\.)\s*(?::|\bis\b|\bhai\b)?\s*([A-Za-z\u0900-\u097F\s\.\'-]+?)(?={END_BOUNDARIES}|$)',
+            rf'^\s*([A-Za-z\u0900-\u097F\s\.\'-]+?)(?={END_BOUNDARIES})'
         ]
         for pat in name_patterns:
             match = re.search(pat, text, re.IGNORECASE)
             if match:
                 candidate = match.group(1).strip()
                 if candidate and len(candidate.split()) <= 4:
-                    name = candidate.title()
-                    break
+                    if candidate.lower() not in ['name', 'is', 'a', 'the', 'ko', 'hai']:
+                        name = candidate.title() if any(c.isascii() and c.isalpha() for c in candidate) else candidate
+                        break
 
-        # 2. Patient Age extraction
+        # 2. Patient Age extraction (handles 'age 35', '35 years', 'Rahul Sharma, 35, male')
         age = None
         age_patterns = [
-            r'(?:age|umar|saal|years old|yrs old|उम्र|साल)\s*(?:is|hai|:)?\s*(\d{1,3})',
-            r'(\d{1,3})\s*(?:years old|saal|yrs old|saal ka|saal ki|साल)'
+            r'\b(?:age|umar|उम्र)\s*(?:is|hai|:)?\s*(\d{1,3})\b',
+            r'\b(\d{1,3})\s*(?:years\s*old|yrs\s*old|years|year|saal|yrs|साल)\b',
+            r'(?:patient|name|mareez)?\s*[A-Za-z\u0900-\u097F\s\.\'-]+?[,\s]+(\d{1,3})\s*(?:years|saal|yr|y\/o|साल|male|female|purush|mahila|m\b|f\b)'
         ]
         for pat in age_patterns:
             match = re.search(pat, lower)
@@ -396,10 +400,10 @@ class AIService:
 
         # 3. Patient Gender
         gender = None
-        if re.search(r'\b(male|purush|aadmi|boy|man|पुरुष|आदमी)\b', lower):
-            gender = "Male"
-        elif re.search(r'\b(female|mahila|aurat|girl|woman|महिला|औरत)\b', lower):
+        if re.search(r'\b(female|mahila|aurat|girl|woman|महिला|औरत)\b', lower) or re.search(r'\b\d{1,3}\s*(?:y|yr|years|saal)?\s*[\/,]?\s*(female|f)\b', lower):
             gender = "Female"
+        elif re.search(r'\b(male|purush|aadmi|boy|man|पुरुष|आदमी)\b', lower) or re.search(r'\b\d{1,3}\s*(?:y|yr|years|saal)?\s*[\/,]?\s*(male|m)\b', lower):
+            gender = "Male"
 
         # 3b. Patient Phone (Optional 10-digit mobile)
         phone = None
@@ -429,11 +433,10 @@ class AIService:
         if weight_match:
             vitals.weight = weight_match.group(1) + " kg"
 
-        # Check if any vital was found
         has_any_vital = any([vitals.bp, vitals.pulse, vitals.temp, vitals.spo2, vitals.weight])
         final_vitals = vitals if has_any_vital else None
 
-        # 5. Symptoms & Duration
+        # 5. Symptoms & Duration (Ensuring Cough is not falsely extracted from Cough Syrup)
         symptoms = None
         duration = None
         symptom_match = re.search(r'(?:complaints?|symptoms?|takleef|problem|तकलीफ|शिकायत)\s*(?:are|is|hai|of|:)?\s*([^,\.]+)', text, re.IGNORECASE)
@@ -442,23 +445,24 @@ class AIService:
             if candidate_sym.lower().startswith("of "):
                 candidate_sym = candidate_sym[3:].strip()
             symptoms = candidate_sym.capitalize()
-        elif "fever" in lower or "bukhar" in lower or "बुखार" in lower or "cough" in lower or "khansi" in lower or "खांसी" in lower:
+        else:
             extracted_symptoms = []
-            if "fever" in lower or "bukhar" in lower or "बुखार" in lower:
+            if re.search(r'\b(fever|bukhar|बुखार)\b', lower):
                 extracted_symptoms.append("Fever")
-            if "cough" in lower or "khansi" in lower or "खांसी" in lower:
+            # Strict boundary: cough syrup must not trigger a cough complaint
+            if re.search(r'\bcough\b(?!\s*syrup)\b', lower) or re.search(r'\b(khansi|खांसी)\b', lower):
                 extracted_symptoms.append("Cough")
-            if "cold" in lower or "jukham" in lower or "जुकाम" in lower or "सर्दी" in lower:
+            if re.search(r'\b(cold|jukham|जुकाम|सर्दी)\b', lower):
                 extracted_symptoms.append("Common Cold / Coryza")
-            if "body ache" in lower or "badan dard" in lower or "बदन दर्द" in lower:
+            if re.search(r'\b(body ache|badan dard|बदन दर्द)\b', lower):
                 extracted_symptoms.append("Body ache")
-            if "throat pain" in lower or "gale me dard" in lower or "sore throat" in lower or "गले में दर्द" in lower:
+            if re.search(r'\b(throat pain|gale me dard|sore throat|गले में दर्द)\b', lower):
                 extracted_symptoms.append("Sore Throat")
-            if "headache" in lower or "sar dard" in lower or "सिर दर्द" in lower:
+            if re.search(r'\b(headache|sar dard|सिर दर्द)\b', lower):
                 extracted_symptoms.append("Headache")
-            if "vomiting" in lower or "ulti" in lower or "उल्टी" in lower:
+            if re.search(r'\b(vomiting|ulti|उल्टी)\b', lower):
                 extracted_symptoms.append("Vomiting")
-            if "acidity" in lower or "gas" in lower or "पेट में जलन" in lower:
+            if re.search(r'\b(acidity|gas|पेट में जलन)\b', lower):
                 extracted_symptoms.append("Acidity / Dyspepsia")
             if extracted_symptoms:
                 symptoms = ", ".join(extracted_symptoms)
@@ -475,57 +479,105 @@ class AIService:
         else:
             flags.append("No explicit diagnosis stated in dictation; field left blank for doctor confirmation.")
 
-        # 7. Medicines Extraction (Context-specific multi-medicine capture without fabricating missing frequencies)
-        medicines: List[MedicineItemSchema] = []
-        med_dict_patterns = [
-            (r'paracetamol|pcm|calpol|dolo|paracitamol|पैरासिटामोल|पेरासिटामोल', "Paracetamol", "650 mg", "Tablet", "Oral"),
-            (r'azithromycin|azithro|azee|azithromicin|अज़ीथ्रोमाइसिन|एजिथ्रोमाइसिन', "Azithromycin", "500 mg", "Tablet", "Oral"),
-            (r'amoxicillin|amoxycillin|mox|augmentin|amoxyclav|एमोक्सिसिलिन', "Amoxicillin & Clavulanate", "625 mg", "Tablet", "Oral"),
+        # 7. Multi-Medicine Extraction (Comprehensive Indian catalog + generic patterns, strictly preserving each item)
+        med_catalog = [
+            (r'dolo\s*650|dolo', "Dolo 650", "650 mg", "Tablet", "Oral"),
+            (r'calpol\s*650|calpol\s*500|calpol', "Calpol", "650 mg", "Tablet", "Oral"),
+            (r'crocin', "Crocin", "650 mg", "Tablet", "Oral"),
+            (r'paracetamol|pcm|paracitamol|पैरासिटामोल|पेरासिटामोल', "Paracetamol", "650 mg", "Tablet", "Oral"),
+            (r'cough syrup|benadryl|ascoril|grilinctus|chericof|alex|tusq|zedex|kufma|कफ सिरप', "Cough Syrup", "100 ml", "Syrup", "Oral"),
+            (r'azithromycin|azithro|azee|azithral|अज़ीथ्रोमाइसिन|एजिथ्रोमाइसिन', "Azithromycin", "500 mg", "Tablet", "Oral"),
+            (r'amoxicillin|amoxycillin|mox|augmentin|amoxyclav|clavam|एमोक्सिसिलिन', "Amoxicillin & Clavulanate", "625 mg", "Tablet", "Oral"),
             (r'pantoprazole|pantocid|pan\s*40|पेंटोप्रजोल|पैंटोसिड', "Pantoprazole", "40 mg", "Tablet", "Oral"),
-            (r'cetirizine|cetrizine|cetzine|सिट्रिजिन', "Cetirizine", "10 mg", "Tablet", "Oral"),
-            (r'levocetirizine|montek\s*lc|montair|लेवोसिट्रिजिन', "Levocetirizine + Montelukast", "5mg + 10mg", "Tablet", "Oral"),
-            (r'cefixime|zifi|taxim|सेफिक्सिम', "Cefixime", "200 mg", "Tablet", "Oral"),
-            (r'cough syrup|syrup|benadryl|ascoril|grilinctus|कफ सिरप', "Cough Syrup", "100 ml", "Syrup", "Oral"),
+            (r'pan\s*d|pantoprazole\s*d', "Pan-D", "40mg + 30mg", "Capsule", "Oral"),
+            (r'rabeprazole|razo|rablet|rabicip', "Rabeprazole", "20 mg", "Tablet", "Oral"),
+            (r'omeprazole|omez', "Omeprazole", "20 mg", "Capsule", "Oral"),
+            (r'cetirizine|cetrizine|cetzine|alerid|सिट्रिजिन', "Cetirizine", "10 mg", "Tablet", "Oral"),
+            (r'levocetirizine|montek\s*lc|montair\s*lc|telekast|लेवोसिट्रिजिन', "Levocetirizine + Montelukast", "5mg + 10mg", "Tablet", "Oral"),
+            (r'fexofenadine|allegra', "Fexofenadine", "120 mg", "Tablet", "Oral"),
+            (r'cefixime|zifi|taxim\s*o|taxim|mahacef|सेफिक्सिम', "Cefixime", "200 mg", "Tablet", "Oral"),
+            (r'ciprofloxacin|ciplox', "Ciprofloxacin", "500 mg", "Tablet", "Oral"),
+            (r'ofloxacin|zanocin|oflox|o2', "Ofloxacin", "200 mg", "Tablet", "Oral"),
             (r'ibuprofen|brufen|combiflam|इबुप्रोफेन', "Ibuprofen + Paracetamol", "400mg + 325mg", "Tablet", "Oral"),
+            (r'aceclofenac|zerodol\s*sp|zerodol\s*p|zerodol|hifenac', "Aceclofenac", "100 mg", "Tablet", "Oral"),
+            (r'diclofenac|voveran', "Diclofenac", "50 mg", "Tablet", "Oral"),
+            (r'tramadol|ultracet', "Tramadol", "50 mg", "Tablet", "Oral"),
+            (r'meftal\s*spas|dicyclomine|cyclopam', "Meftal-Spas", "", "Tablet", "Oral"),
+            (r'ondansetron|emeset|vomikind', "Ondansetron", "4 mg", "Tablet", "Oral"),
+            (r'domperidone|domstal', "Domperidone", "10 mg", "Tablet", "Oral"),
             (r'metformin|glycomet|मेटफॉर्मिन', "Metformin", "500 mg", "Tablet", "Oral"),
-            (r'telmisartan|telma|टेलमिसार्टन', "Telmisartan", "40 mg", "Tablet", "Oral"),
-            (r'multivitamin|becosules|zinc|मल्टीविटामिन', "Multivitamin with Zinc", "", "Capsule", "Oral")
+            (r'glimepiride|amaryl', "Glimepiride", "1 mg", "Tablet", "Oral"),
+            (r'telmisartan|telma|telmikind|टेलमिसार्टन', "Telmisartan", "40 mg", "Tablet", "Oral"),
+            (r'amlodipine|stamlo|amlong', "Amlodipine", "5 mg", "Tablet", "Oral"),
+            (r'atorvastatin|atorva|storvas', "Atorvastatin", "10 mg", "Tablet", "Oral"),
+            (r'multivitamin|becosules|zincovit|a\s*to\s*z|मल्टीविटामिन', "Multivitamin with Zinc", "", "Capsule", "Oral"),
+            (r'calcium|shelcal', "Calcium + Vitamin D3", "500 mg", "Tablet", "Oral"),
+            (r'vitamin\s*d3|calcirol|d3\s*60k', "Vitamin D3", "60,000 IU", "Capsule", "Oral"),
+            (r'ors|electral', "Oral Rehydration Salts (ORS)", "", "Powder", "Oral"),
+            (r'antacid|digene|gelusil|mucaine', "Antacid", "", "Syrup", "Oral"),
+            (r'eye\s*drops?|ear\s*drops?', "Eye/Ear Drops", "", "Drops", "Ophthalmic/Otic")
         ]
 
-        # First find all matching medicines and their positions in text
-        matched_meds = []
-        for pat, med_name, default_strength, dosage_form, route in med_dict_patterns:
-            m = re.search(rf'\b(?:{pat})\b', lower)
-            if m:
-                matched_meds.append({
+        raw_matches = []
+        for pat, med_name, def_strength, form, route in med_catalog:
+            for m in re.finditer(rf'\b(?:{pat})\b', lower):
+                raw_matches.append({
                     "start": m.start(),
                     "end": m.end(),
-                    "pat": pat,
                     "name": med_name,
-                    "default_strength": default_strength,
-                    "form": dosage_form,
+                    "default_strength": def_strength,
+                    "form": form,
                     "route": route
                 })
 
-        # Sort matches by order of appearance in dictation
+        # Generic prefix matching e.g. "Tab XYZ", "Syrup ABC"
+        generic_pat = r'\b(tab|tablet|cap|capsule|syp|syrup|inj|injection|drops?|cream|ointment|gel)\s+([A-Za-z0-9\-\+]+)\b'
+        form_map = {
+            'tab': 'Tablet', 'tablet': 'Tablet',
+            'cap': 'Capsule', 'capsule': 'Capsule',
+            'syp': 'Syrup', 'syrup': 'Syrup',
+            'inj': 'Injection', 'injection': 'Injection',
+            'drops': 'Drops', 'drop': 'Drops',
+            'cream': 'Ointment', 'ointment': 'Ointment', 'gel': 'Ointment'
+        }
+        for m in re.finditer(generic_pat, lower):
+            form_word = m.group(1)
+            drug_word = m.group(2)
+            if drug_word not in ['is', 'a', 'the', 'and', 'for', 'after', 'before', 'once', 'twice', 'thrice', 'daily', 'days', 'ko', 'hai']:
+                raw_matches.append({
+                    "start": m.start(),
+                    "end": m.end(),
+                    "name": drug_word.title(),
+                    "default_strength": "",
+                    "form": form_map.get(form_word, 'Tablet'),
+                    "route": 'Oral' if form_word in ['tab', 'tablet', 'cap', 'capsule', 'syp', 'syrup'] else 'Topical'
+                })
+
+        # Deduplicate overlapping matches (prefer longer match)
+        raw_matches.sort(key=lambda x: (x["end"] - x["start"]), reverse=True)
+        matched_meds = []
+        for m in raw_matches:
+            overlaps = False
+            for kept in matched_meds:
+                if not (m["end"] <= kept["start"] or m["start"] >= kept["end"]):
+                    overlaps = True
+                    break
+            if not overlaps:
+                matched_meds.append(m)
+
         matched_meds.sort(key=lambda x: x["start"])
 
-        # Extract context-specific parameters for each medicine
+        medicines: List[MedicineItemSchema] = []
         for idx, med_info in enumerate(matched_meds):
-            # Context segment starts at medicine name and ends at next medicine or punctuation/end
             seg_start = med_info["start"]
-            if idx + 1 < len(matched_meds):
-                seg_end = matched_meds[idx + 1]["start"]
-            else:
-                seg_end = min(len(lower), seg_start + 140)
-            
+            seg_end = matched_meds[idx + 1]["start"] if idx + 1 < len(matched_meds) else min(len(lower), seg_start + 140)
             med_segment = lower[seg_start:seg_end]
 
             # Strength: check segment first, then default
-            str_search = re.search(r'(\d+\s*(?:mg|gm|ml))', med_segment)
+            str_search = re.search(r'(\d+(?:\.\d+)?\s*(?:mg|gm|ml|mcg|iu|%))', med_segment)
             actual_strength = str_search.group(1) if str_search else med_info["default_strength"]
 
-            # Dose: check if explicitly spoken (e.g., 1 tablet, 2 tabs, 10 ml), otherwise empty string
+            # Dose: check if explicitly spoken, otherwise empty string
             dose_search = re.search(r'(\d+\s*(?:tab|tablet|cap|capsule|ml|tsp|puff|drop))', med_segment)
             med_dose = dose_search.group(1) if dose_search else ""
 
@@ -540,7 +592,6 @@ class AIService:
             elif re.search(r'1-1-1|tds|thrice daily|दिन\s+में\s+तीन\s+बार', med_segment):
                 med_freq = "1-1-1"
             elif len(matched_meds) == 1:
-                # If only one medicine exists, check entire dictation for global frequency
                 if re.search(r'1-0-1|twice daily|subah\s+sham|सुबह\s+शाम|bd\b', lower):
                     med_freq = "1-0-1"
                 elif re.search(r'1-0-0|once daily|subah\s+khali\s+pet|सुबह\s+खाली\s+पेट|od\b', lower):
@@ -589,7 +640,7 @@ class AIService:
             follow_up = f"Review OPD after {follow_match.group(1)}"
 
         is_confirmed = bool(re.search(r'\b(confirmed diagnosis|confirmed case|final diagnosis|pucca diagnosis)\b', lower))
-        
+
         # Build structured consultation report preserving clinical meaning
         report_parts = []
         if symptoms:
@@ -617,7 +668,7 @@ class AIService:
             report_parts.append("4. Doctor Assessment: No confirmed diagnosis dictated; pending doctor evaluation")
 
         if medicines:
-            med_summaries = [f"{m.name} {m.strength} ({m.frequency}, {m.duration})" for m in medicines]
+            med_summaries = [f"{m.name} {m.strength} ({m.frequency or 'unspecified'}, {m.duration or 'unspecified'})" for m in medicines]
             report_parts.append(f"5. Doctor-Provided Treatment: {'; '.join(med_summaries)}")
         else:
             report_parts.append("5. Doctor-Provided Treatment: None dictated")
@@ -823,7 +874,7 @@ class AIService:
         for model in models_to_try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.AI_API_KEY}"
             try:
-                async with httpx.AsyncClient(timeout=6.0) as client:
+                async with httpx.AsyncClient(timeout=12.0) as client:
                     resp = await client.post(url, json=payload)
                     if resp.status_code != 200:
                         logger.warning(f"Gemini Refine model {model} returned status {resp.status_code}")

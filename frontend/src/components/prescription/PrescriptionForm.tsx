@@ -431,9 +431,9 @@ export const PrescriptionForm: React.FC<Props> = ({ onPreview, initialPrescripti
             name: m.name || '',
             strength: m.strength || '',
             dosageForm: m.dosage_form || m.dosageForm || 'Tablet',
-            dose: m.dose || '1 Tab',
-            frequency: m.frequency || '1-0-1',
-            duration: m.duration || '5 Days',
+            dose: m.dose || '',
+            frequency: m.frequency || '',
+            duration: m.duration || '',
             instructions: m.instructions || '',
             route: m.route || 'Oral'
           })));
@@ -493,8 +493,12 @@ export const PrescriptionForm: React.FC<Props> = ({ onPreview, initialPrescripti
       const durationMatch = lower.match(/(\d+)\s*(?:days?|din)/i);
       if (durationMatch && durationMatch[1]) {
         const newDuration = `${durationMatch[1]} Days`;
-        setMedicines(prev => prev.map((m, idx) => {
-          if (idx === 0 || lower.includes(m.name.toLowerCase())) {
+        setMedicines(prev => {
+          const mentionedAnyMed = prev.some(m => m.name && lower.includes(m.name.toLowerCase()));
+          return prev.map((m, idx) => {
+            const matchesThis = Boolean(m.name && lower.includes(m.name.toLowerCase()));
+            const fallbackMatch = !mentionedAnyMed && idx === 0;
+            if (matchesThis || fallbackMatch) {
             changes.push({
               field: `${m.name || 'Medicine #1'} Duration`,
               oldValue: m.duration || 'Not set',
@@ -504,7 +508,8 @@ export const PrescriptionForm: React.FC<Props> = ({ onPreview, initialPrescripti
             return { ...m, duration: newDuration };
           }
           return m;
-        }));
+        });
+      });
       }
     }
 

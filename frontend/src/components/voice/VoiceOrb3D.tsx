@@ -527,6 +527,7 @@ export const VoiceOrb3D: React.FC = () => {
           processingTimeMs: aiResponse.processing_time_ms
         };
 
+        parsedVoiceResultRef.current = normalized;
         setStagedVoiceData(normalized);
         setVoiceState('idle');
         showToast(
@@ -567,6 +568,7 @@ export const VoiceOrb3D: React.FC = () => {
       isDiagnosisConfirmed: false,
       providerUsed: 'offline_clinical_engine'
     };
+    parsedVoiceResultRef.current = offlineNormalized;
     setStagedVoiceData(offlineNormalized);
     setVoiceState('idle');
     showToast('Prescription draft organized! Review, edit, and confirm below.', 'info');
